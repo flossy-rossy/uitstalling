@@ -1,0 +1,49 @@
+<main class="min-h-dvh bg-zinc-950 text-zinc-100 flex items-center justify-center px-4">
+  <div class="w-full max-w-sm">
+    <p class="font-mono text-amber-400 text-sm tracking-widest uppercase mb-6">
+      <span class="text-amber-400">8</span>stal · uitstalling
+    </p>
+    <h1 class="text-3xl font-bold mb-2">Create your passkey</h1>
+    <p class="text-sm text-zinc-400 mb-8">
+      Closed beta — your email must be on the invite list.
+    </p>
+
+    <label class="block text-sm font-medium mb-1" for="signup-email">Email</label>
+    <input
+      id="signup-email"
+      type="email"
+      autocomplete="email"
+      placeholder="you@example.com"
+      class="mb-4 w-full rounded-lg bg-zinc-900 ring-1 ring-zinc-700 focus:ring-amber-500 border-0 px-3 py-2 text-zinc-100"
+    />
+
+    <label class="block text-sm font-medium mb-1" for="signup-name">Name (optional)</label>
+    <input
+      id="signup-name"
+      type="text"
+      autocomplete="name"
+      placeholder="Your name"
+      class="mb-6 w-full rounded-lg bg-zinc-900 ring-1 ring-zinc-700 focus:ring-amber-500 border-0 px-3 py-2 text-zinc-100"
+    />
+
+    <button
+      type="button"
+      data-webauthn="register"
+      data-begin-url={~p"/auth/register/begin"}
+      data-complete-url={~p"/auth/register/complete"}
+      data-email-input="signup-email"
+      data-name-input="signup-name"
+      data-status-target="webauthn-status"
+      class="w-full rounded-lg bg-amber-500 hover:bg-amber-400 px-6 py-4 text-lg font-bold text-zinc-950 transition disabled:opacity-50"
+    >
+      Create passkey
+    </button>
+
+    <p id="webauthn-status" class="mt-4 text-sm text-zinc-400" data-kind=""></p>
+
+    <p class="mt-8 text-sm text-zinc-500">
+      Already have a passkey?
+      <.link navigate={~p"/auth/login"} class="text-amber-400 hover:text-amber-300">Sign in</.link>
+    </p>
+  </div>
+</main>

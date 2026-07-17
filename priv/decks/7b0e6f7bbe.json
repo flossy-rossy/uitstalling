@@ -1,0 +1,112 @@
+{
+  "accent": "cyan",
+  "slides": [
+    {
+      "caption": "A Friendly Chat for Our Club Members",
+      "heading": "Taking Care of Your Hearing",
+      "id": "s0",
+      "kind": "image",
+      "layout": "media",
+      "notes": "Welcome everyone warmly. Remind them we are among friends.",
+      "src": "/images/ear-care.jpg"
+    },
+    {
+      "columns": [
+        [
+          "Asking others to repeat themselves often",
+          "Turning up the TV louder than before"
+        ],
+        [
+          "Straining to follow conversations at dinner",
+          "Missing the phone or doorbell"
+        ]
+      ],
+      "heading": "Early Signs You Might Notice",
+      "id": "s1",
+      "kicker": "§ 1 · RECOGNIZING SIGNS",
+      "layout": "bullets",
+      "notes": "Pose gently: 'Have you noticed any of these at the club or home?'"
+    },
+    {
+      "heading": "Why a Simple Check Matters",
+      "id": "s2",
+      "kicker": "§ 2 · THE VALUE OF TESTING",
+      "layout": "points",
+      "notes": "Emphasize that it's not a medical ordeal, just a friendly visit.",
+      "points": [
+        {
+          "body": "A quick test tells you exactly where you stand.",
+          "label": "Peace of Mind"
+        },
+        {
+          "body": "Hearing well keeps you in the stories and laughs.",
+          "label": "Stay Connected"
+        },
+        {
+          "body": "Modern checks are comfortable and take minutes.",
+          "label": "Easy and Painless"
+        }
+      ]
+    },
+    {
+      "columns": [
+        "If Hearing Fades",
+        "Possible Effect",
+        "Good News"
+      ],
+      "heading": "What Happens If We Wait",
+      "id": "s3",
+      "kicker": "§ 3 · COMPLICATIONS",
+      "layout": "table",
+      "notes": "Be caring, not alarming. Highlight the good news column.",
+      "rows": [
+        [
+          "Missing chat at bridge",
+          {
+            "text": "Feeling left out",
+            "tint": "bad"
+          },
+          {
+            "text": "Fitted aid restores joy",
+            "tint": "ok"
+          }
+        ],
+        [
+          "Avoiding gatherings",
+          {
+            "text": "Loneliness",
+            "tint": "warn"
+          },
+          {
+            "text": "Social clubs welcome you",
+            "tint": "ok"
+          }
+        ],
+        [
+          "Brain works harder",
+          {
+            "text": "Tiredness",
+            "tint": "warn"
+          },
+          {
+            "text": "Checking eases strain",
+            "tint": "ok"
+          }
+        ]
+      ]
+    },
+    {
+      "body": "Come by our clinic for a gentle, free hearing check. ~~No fuss~~ **It's a pleasure to help.** ==Stay part of the conversation.==",
+      "heading": "You Deserve to Hear the Laughter",
+      "id": "s4",
+      "kicker": "§ 4 · AN INVITATION",
+      "layout": "statement",
+      "notes": "Close with a smile. Offer to walk over together after the talk.",
+      "size": "lg",
+      "tone": "accent"
+    }
+  ],
+  "theme": "midnight",
+  "title": "Hearing Health for Our Members",
+  "voice": "elderly country club members - informative and encouraging"
+}

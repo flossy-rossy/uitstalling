@@ -1,0 +1,40 @@
+<main class="min-h-dvh bg-zinc-950 text-zinc-100 flex items-center justify-center px-4">
+  <div class="w-full max-w-sm">
+    <p class="font-mono text-amber-400 text-sm tracking-widest uppercase mb-6">
+      <span class="text-amber-400">8</span>stal · uitstalling
+    </p>
+    <h1 class="text-3xl font-bold mb-2">Sign in</h1>
+    <p class="text-sm text-zinc-400 mb-8">Authenticate with your passkey.</p>
+
+    <input
+      id="login-identifier"
+      type="text"
+      autocomplete="username webauthn"
+      placeholder="Select your passkey"
+      data-webauthn-conditional
+      data-begin-url={~p"/auth/login/begin"}
+      data-complete-url={~p"/auth/login/complete"}
+      class="mb-4 w-full rounded-lg bg-zinc-900 ring-1 ring-zinc-700 focus:ring-amber-500 border-0 px-3 py-2 text-zinc-100"
+    />
+
+    <button
+      type="button"
+      data-webauthn="login"
+      data-begin-url={~p"/auth/login/begin"}
+      data-complete-url={~p"/auth/login/complete"}
+      data-status-target="webauthn-status"
+      class="w-full rounded-lg bg-amber-500 hover:bg-amber-400 px-6 py-4 text-lg font-bold text-zinc-950 transition disabled:opacity-50"
+    >
+      Sign in with passkey
+    </button>
+
+    <p id="webauthn-status" class="mt-4 text-sm text-zinc-400" data-kind=""></p>
+
+    <p class="mt-8 text-sm text-zinc-500">
+      Invited but new here?
+      <.link navigate={~p"/auth/signup"} class="text-amber-400 hover:text-amber-300">
+        Create your passkey
+      </.link>
+    </p>
+  </div>
+</main>

@@ -1,0 +1,36 @@
+# fly.toml — UIT / uitstalling
+# See https://fly.io/docs/reference/configuration/
+
+app = 'uitstalling'
+primary_region = 'jnb'
+kill_signal = 'SIGTERM'
+
+[build]
+
+[deploy]
+  release_command = '/app/bin/migrate'
+
+[env]
+  # PHX_HOST is also the WebAuthn RP id — passkeys are bound to this host, so
+  # changing it later invalidates existing passkeys. Set to your custom domain
+  # here (and re-register) before inviting people you don't want to re-enroll.
+  PHX_HOST = 'uitstalling.fly.dev'
+  PHX_SERVER = 'true'
+  PORT = '8080'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+[http_service.concurrency]
+  type = 'connections'
+  hard_limit = 1000
+  soft_limit = 1000
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

@@ -1,0 +1,229 @@
+{
+  "accent": "amber",
+  "slides": [
+    {
+      "footnote": "→ arrow keys, or open /deck/remote on your phone",
+      "heading": "Passwordless,\nand why your\n==TOTP isn't saving you.==",
+      "id": "s0",
+      "kicker": "SIMCONTROL · LIGHTNING TALK · < 10 MIN",
+      "layout": "title",
+      "notes": "Open strong. Mention this entire deck is one JSON document rendered through 9 fixed layouts.",
+      "subheading": "A tour through WebAuthn after a week of study. This copy of the deck is rendered from JSON — there is no HTML anywhere in the data."
+    },
+    {
+      "body": "~~\"Passkeys vs. passwords.\"~~\n\n==\"Phishable auth vs. phishing-resistant auth.\"==\n\nEverything we use today — passwords, SMS OTP, TOTP, push, magic links — is phishable. WebAuthn is the first widely-deployed primitive that isn't.",
+      "heading": "Ask the ==right question.==",
+      "id": "s1",
+      "kicker": "§ 0 · FRAMING",
+      "layout": "statement"
+    },
+    {
+      "columns": [
+        [
+          "Not typo'd domains.",
+          "Real-time AiTM proxies the real page.",
+          "User sees the real URL — it IS the real site.",
+          "TOTP/SMS/push captured + replayed <2s.",
+          "Session cookie exfil'd — password moot."
+        ],
+        [
+          "`Evilginx`",
+          "`EvilProxy`",
+          "`Modlishka`"
+        ]
+      ],
+      "footnote": "Recent victims: Microsoft 365 admins · Cloudflare · Twilio · Reddit · Cisco · …",
+      "heading": "Phishing in 2026.",
+      "id": "s2",
+      "kicker": "§ 1 · THE ATTACK",
+      "layout": "bullets",
+      "notes": "Land the point: this is commodity tooling, not nation-state capability."
+    },
+    {
+      "footnote": "Login (assertion) is the same flow — fewer fields, same actors, same shape.",
+      "heading": "Registration, in one flow.",
+      "id": "s3",
+      "kicker": "§ 2.1 · THE CEREMONY",
+      "layout": "flow",
+      "steps": [
+        {
+          "actor": "SERVER",
+          "body": "Generates a random challenge\nSends registration options",
+          "color": "sky"
+        },
+        {
+          "actor": "BROWSER",
+          "body": "Calls the WebAuthn API\nBundles the REAL origin into `clientDataJSON`",
+          "color": "emerald"
+        },
+        {
+          "actor": "AUTHENTICATOR",
+          "arrow_label": "please confirm",
+          "body": "Generates a key pair in hardware\nLocks the private key to this site",
+          "color": "amber"
+        },
+        {
+          "actor": "USER",
+          "arrow_label": "confirmed",
+          "body": "Touches fingerprint / Face ID",
+          "color": "rose"
+        },
+        {
+          "actor": "AUTHENTICATOR",
+          "body": "Signs the challenge with the new key\nReturns public key + signature",
+          "color": "amber"
+        },
+        {
+          "actor": "SERVER (wax_)",
+          "body": "Verifies the signature\nStores the public key for this user",
+          "color": "sky"
+        }
+      ],
+      "terminal": "✓ REGISTERED"
+    },
+    {
+      "heading": "Four properties of phishing-resistant auth.",
+      "id": "s4",
+      "kicker": "§ 2.2 · WHY IT WORKS",
+      "layout": "points",
+      "points": [
+        {
+          "body": "The private key never leaves hardware — Secure Enclave, StrongBox, the SE chip in a Yubikey. A server breach reveals only public keys.",
+          "label": "1 · NO SHARED SECRET"
+        },
+        {
+          "body": "The browser bakes the requesting site's URL into `clientDataJSON`.",
+          "label": "2 · ORIGIN BINDING"
+        },
+        {
+          "body": "32 random bytes, signed once. No replay, no captured-code window.",
+          "label": "3 · FRESH CHALLENGE"
+        },
+        {
+          "body": "The fingerprint never transits anywhere. It just tells the secure element: **this user is here, you may sign.**",
+          "label": "4 · BIOMETRIC GATES THE KEY"
+        }
+      ]
+    },
+    {
+      "body": "The origin lives inside `clientDataJSON`, so the origin lives inside the signature. A phishing site cannot produce a signature the real server will accept — not \"very hard\", **mathematically cannot**.",
+      "code": "==authData== || SHA-256(==clientDataJSON==)",
+      "id": "s5",
+      "kicker": "§ 2.3 · WHAT GETS SIGNED",
+      "layout": "big_code"
+    },
+    {
+      "columns": [
+        "Synced",
+        "Backed Up",
+        "What It Is",
+        "What To Do"
+      ],
+      "footnote": "Most implementations check \"is this WebAuthn? yes/no\" and stop. Reading these two bits is a ==free policy upgrade.==",
+      "heading": "Four credential states, one prohibited.",
+      "id": "s6",
+      "kicker": "§ 2.4 · CREDENTIAL STATES",
+      "layout": "table",
+      "rows": [
+        [
+          {
+            "text": "Yes",
+            "tint": "ok"
+          },
+          {
+            "text": "Yes",
+            "tint": "ok"
+          },
+          "Saved on your phone\nor in the cloud",
+          {
+            "text": "Safe on its own",
+            "tint": "ok"
+          }
+        ],
+        [
+          {
+            "text": "Yes",
+            "tint": "ok"
+          },
+          "No",
+          "Can be backed up,\nbut hasn't been yet",
+          {
+            "text": "Turn on backup",
+            "tint": "warn"
+          }
+        ],
+        [
+          "No",
+          "No",
+          "Only works on one device\nor a physical key",
+          {
+            "text": "Add a backup method",
+            "tint": "warn"
+          }
+        ],
+        [
+          "No",
+          {
+            "text": "Yes",
+            "tint": "ok"
+          },
+          "Breaks security rules",
+          {
+            "text": "Never use",
+            "tint": "bad"
+          }
+        ]
+      ]
+    },
+    {
+      "caption": "(placeholder) a screen recording of a login being phished",
+      "heading": "Watch a TOTP login get captured.",
+      "id": "s7",
+      "kicker": "§ 3 · LIVE FIRE",
+      "kind": "image",
+      "layout": "media"
+    },
+    {
+      "body": "That attack didn't need malware. It didn't need to break TLS or cryptography.\n\n**It just needed the user to type their secret on a proxy of the real site.**\n\n==That's the entire class of attack WebAuthn defeats — structurally, not by user vigilance.==",
+      "id": "s8",
+      "kicker": "§ 4 · WHAT JUST HAPPENED",
+      "layout": "statement",
+      "notes": "Pause here. Let it sit.",
+      "tone": "accent"
+    },
+    {
+      "heading": "FAQ.",
+      "id": "s9",
+      "items": [
+        {
+          "a": "Multi-credential enrolment + provider sync (iCloud, GPM) + cross-device QR sign-in. Recovery is solved.",
+          "q": "What if I lose my phone?"
+        },
+        {
+          "a": "WebAuthn shipped in Chrome 67 (2018). 99% of users have support.",
+          "q": "What about old browsers?"
+        },
+        {
+          "a": "iPhone Secure Enclave and Pixel StrongBox: yes. Software password-manager passkeys: still phishing-resistant, just no hardware key-extraction resistance.",
+          "q": "Are passkeys really hardware-backed everywhere?"
+        },
+        {
+          "a": "Account lockout at the provider is rare. Recover through your provider's recovery email + security settings. Mitigation: **hardware key** as secondary factor, or multi-credential enrolment. This is why ==defence in depth== matters.",
+          "q": "What if Apple or Google locks me out of my account?"
+        }
+      ],
+      "kicker": "§ 5 · QUESTIONS",
+      "layout": "faq"
+    },
+    {
+      "footnote": "This deck: 11 slides of JSON · 9 layouts · zero HTML in the data.",
+      "heading": "Phishing-resistant authentication\nis no longer a luxury.\n==Our second factors have been caught.==",
+      "id": "s10",
+      "kicker": "FIN",
+      "layout": "title",
+      "notes": "Close, then segue into the builder demo if there's time.",
+      "subheading": "The standard, the browsers, the providers, the hardware — all of it shipped in the last 3 years."
+    }
+  ],
+  "title": "Passwordless / WebAuthn — AST edition"
+}
