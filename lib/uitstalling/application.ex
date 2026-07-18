@@ -12,9 +12,12 @@ defmodule Uitstalling.Application do
         UitstallingWeb.Telemetry,
         Uitstalling.Repo,
         {DNSCluster, query: Application.get_env(:uitstalling, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: Uitstalling.PubSub}
+        {Phoenix.PubSub, name: Uitstalling.PubSub},
+        # Per-deck request workers, started on demand via DeckWorker.kick/1
+        {Registry, keys: :unique, name: Uitstalling.Decks.Registry},
+        {DynamicSupervisor, name: Uitstalling.Decks.WorkerSupervisor, strategy: :one_for_one}
       ] ++
-        pipeline_child() ++
+        boot_drain_child() ++
         [
           # Start to serve requests, typically the last entry
           UitstallingWeb.Endpoint
@@ -26,12 +29,13 @@ defmodule Uitstalling.Application do
     Supervisor.start_link(children, opts)
   end
 
-  # Off in tests: the pipeline drains the queue eagerly, which would race
-  # tests that assert on the pending "generating…" state. Pipeline tests
-  # start it manually.
-  defp pipeline_child do
+  # Off in tests: workers drain the queue eagerly, which would race tests
+  # that assert on the pending "generating…" state. Worker tests start
+  # workers manually. In dev/prod this one-shot task resumes any decks with
+  # requests left unfinished by the previous run.
+  defp boot_drain_child do
     if Application.get_env(:uitstalling, :start_pipeline, true) do
-      [Uitstalling.Decks.Pipeline]
+      [{Task, &Uitstalling.Decks.DeckWorker.kick_unfinished/0}]
     else
       []
     end

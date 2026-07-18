@@ -53,3 +53,12 @@ config :uitstalling, :webauthn,
 
 # Empty allowlist in tests = open (fixtures create registered users freely).
 config :uitstalling, allowed_emails: []
+
+# Asset uploads land in a throwaway dir; tests clean it themselves.
+config :uitstalling, :asset_storage, adapter: :local, dir: "tmp/test-uploads"
+
+# Deterministic image generator for tests.
+config :uitstalling, :image_generator, Uitstalling.Assets.Generator.Fake
+
+# Short generation timeout so hang-handling is testable.
+config :uitstalling, :image_gen_timeout, 500

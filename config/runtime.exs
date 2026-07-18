@@ -9,6 +9,28 @@ config :uitstalling,
   agent_base_url: System.get_env("AGENT_BASE_URL") || "https://api.anthropic.com",
   agent_app_url: System.get_env("AGENT_APP_URL")
 
+# Image generation (OpenRouter's unified Image API). IMAGE_API_KEY may be
+# omitted when AGENT_API_KEY is already an OpenRouter key.
+config :uitstalling,
+  image_api_key: System.get_env("IMAGE_API_KEY"),
+  image_model: System.get_env("IMAGE_MODEL") || "bytedance-seed/seedream-4.5",
+  image_base_url: System.get_env("IMAGE_BASE_URL") || "https://openrouter.ai/api/v1"
+
+# Asset storage: Tigris (Fly's S3) when a bucket is configured —
+# `fly storage create` injects BUCKET_NAME + AWS_* into the app env.
+# Without one (dev/test, or a fresh deploy before storage exists), assets
+# fall back to local disk, which on Fly is EPHEMERAL — create the bucket
+# before relying on uploads in production.
+if bucket = System.get_env("BUCKET_NAME") do
+  config :uitstalling, :asset_storage,
+    adapter: :s3,
+    bucket: bucket,
+    endpoint: System.get_env("AWS_ENDPOINT_URL_S3") || "https://fly.storage.tigris.dev",
+    region: System.get_env("AWS_REGION") || "auto",
+    access_key_id: System.get_env("AWS_ACCESS_KEY_ID"),
+    secret_access_key: System.get_env("AWS_SECRET_ACCESS_KEY")
+end
+
 # Wire format: "anthropic" (default; also Z.ai's GLM endpoint) or "openai"
 # (OpenRouter and most aggregators). Tests pin the Fake agent in test.exs.
 if config_env() != :test do

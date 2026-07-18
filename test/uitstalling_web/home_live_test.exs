@@ -32,8 +32,6 @@ defmodule UitstallingWeb.HomeLiveTest do
   end
 
   test "the new-presentation form generates a deck end to end", %{conn: conn} do
-    start_supervised!(Decks.Pipeline)
-
     {:ok, view, html} = live(conn, "/new")
     assert html =~ "THEME"
     assert html =~ "TONE &amp; AUDIENCE"
@@ -53,8 +51,11 @@ defmodule UitstallingWeb.HomeLiveTest do
     assert raw["theme"] == "midnight"
     assert raw["accent"] == "cyan"
 
-    # The pipeline (fake agent) replaces it with the generated deck and marks
-    # the request done (status flips just after the deck is saved).
+    # This deck's worker (only startable once the deck id exists) boot-drains
+    # the queued create; the fake agent replaces the stub and marks the
+    # request done (status flips just after the deck is saved).
+    start_supervised!({Decks.DeckWorker, deck_id})
+
     assert_eventually(fn ->
       Decks.load_raw!(deck_id)["title"] == "FAKE DECK: the story of our product" and
         match?([%{"status" => "done"}], Decks.load_requests())

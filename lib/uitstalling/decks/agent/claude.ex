@@ -3,8 +3,10 @@ defmodule Uitstalling.Decks.Agent.Claude do
   Real agent: one Messages API call per request (Anthropic wire format).
 
   Prompt layout follows the caching rules: the stable design-system block goes
-  first in `system` with a cache breakpoint; everything volatile (deck JSON,
-  the request, retry errors) goes in the user turn. Configured entirely via env:
+  first in `system` with a cache breakpoint; the deck JSON — identical across
+  retries and consecutive edits of the same deck — goes in a second cached
+  system block; only the volatile request/retry text rides in the user turn.
+  Configured entirely via env:
 
     AGENT_API_KEY  — provider API key (required)
     AGENT_MODEL    — model id, per-request parameter (default claude-haiku-4-5)
@@ -19,30 +21,32 @@ defmodule Uitstalling.Decks.Agent.Claude do
   alias Uitstalling.Decks
 
   @impl true
-  def generate_slide(deck, request, errors) do
+  def generate_slide(deck, request, retry) do
+    system = [edit_system_prompt(), edit_context_prompt(deck)]
+
     with {:ok, api_key} <- fetch_api_key(),
-         {:ok, text} <-
-           call_api(api_key, edit_system_prompt(), edit_user_prompt(deck, request, errors), 4096) do
+         {:ok, text} <- call_api(api_key, system, edit_user_prompt(request, retry), 4096) do
       extract_json(text)
     end
   end
 
   @impl true
-  def generate_deck(request, errors) do
+  def generate_deck(request, retry) do
     with {:ok, api_key} <- fetch_api_key(),
          {:ok, text} <-
-           call_api(api_key, create_system_prompt(), create_user_prompt(request, errors), 16_000) do
+           call_api(api_key, [create_system_prompt()], create_user_prompt(request, retry), 16_000) do
       extract_json(text)
     end
   end
 
-  defp call_api(api_key, system, user, max_tokens) do
+  defp call_api(api_key, system_blocks, user, max_tokens) do
     body = %{
       model: config(:agent_model, "claude-haiku-4-5"),
       max_tokens: max_tokens,
-      system: [
-        %{type: "text", text: system, cache_control: %{type: "ephemeral"}}
-      ],
+      system:
+        Enum.map(system_blocks, fn text ->
+          %{type: "text", text: text, cache_control: %{type: "ephemeral"}}
+        end),
       messages: [%{role: "user", content: user}]
     }
 
@@ -63,6 +67,11 @@ defmodule Uitstalling.Decks.Agent.Claude do
         case resp["stop_reason"] do
           "refusal" ->
             {:error, :refused}
+
+          "max_tokens" ->
+            # The reply was cut off — parsing the fragment would only produce
+            # a misleading invalid-JSON error.
+            {:error, :truncated}
 
           _ ->
             text =
@@ -99,35 +108,52 @@ defmodule Uitstalling.Decks.Agent.Claude do
     - Stay strictly within the design system described below. Unknown keys,
       unknown layouts, and off-palette values are rejected by a validator.
     - Preserve the slide's "id" and any fields the request doesn't ask you to
-      change. Respect the "block" scope when one is given.
+      change. When the request scopes the edit to one named part ("block"),
+      every other field must be returned byte-for-byte unchanged.
     - Match the deck's writing voice.
 
     #{Decks.schema_prompt()}
     """
   end
 
+  # The deck is stable across retries and consecutive edits — it lives in its
+  # own system block so the API can cache it separately from the request.
   @doc false
-  def edit_user_prompt(deck, request, errors) do
-    voice = deck["voice"] || "punchy, technical, confident"
+  def edit_context_prompt(deck) do
+    voice =
+      case deck["voice"] do
+        v when is_binary(v) and v != "" ->
+          v
 
-    scope =
-      if request["block"],
-        do: "Change ONLY the \"#{request["block"]}\" part of the slide.",
-        else: "The request applies to the whole slide."
+        _ ->
+          "not set — infer the voice from the existing slides' text and match it exactly"
+      end
 
     """
     Deck voice: #{voice}
 
     Full deck for context:
     #{Jason.encode!(deck)}
+    """
+  end
 
-    Edit request for slide index #{request["slide_index"]} (id=#{request["slide_id"]}, layout=#{request["layout"]}):
+  @doc false
+  def edit_user_prompt(request, retry) do
+    scope =
+      if request["block"],
+        do:
+          "Change ONLY the \"#{request["block"]}\" part of the slide. " <>
+            "Return every other field byte-for-byte unchanged.",
+        else: "The request applies to the whole slide."
+
+    """
+    Edit request for the slide with id=#{request["slide_id"]} (layout=#{request["layout"]}):
     "#{request["prompt"]}"
 
     #{scope}
 
     Return the complete replacement JSON object for this one slide.
-    #{retry_block(errors)}
+    #{retry_block(retry)}
     """
   end
 
@@ -156,7 +182,7 @@ defmodule Uitstalling.Decks.Agent.Claude do
   end
 
   @doc false
-  def create_user_prompt(request, errors) do
+  def create_user_prompt(request, retry) do
     """
     Create a presentation.
 
@@ -168,36 +194,92 @@ defmodule Uitstalling.Decks.Agent.Claude do
     #{request["prompt"]}
 
     Return the complete deck JSON object.
-    #{retry_block(errors)}
+    #{retry_block(retry)}
     """
   end
 
-  defp retry_block([]), do: ""
+  defp retry_block(nil), do: ""
 
-  defp retry_block(errors) do
+  defp retry_block(%{errors: errors} = retry) do
+    previous =
+      case retry[:previous] do
+        %{} = map ->
+          """
+          Your previous attempt was:
+          #{Jason.encode!(map)}
+          """
+
+        _ ->
+          ""
+      end
+
     """
 
-    Your previous attempt was rejected by the validator with these errors.
-    Fix them and return the corrected JSON:
+    #{previous}It was rejected by the validator with these errors:
     #{Enum.map_join(errors, "\n", &("- " <> &1))}
+    Fix ONLY what the errors require and return the corrected JSON.
     """
   end
 
-  # The model is asked for bare JSON, but be lenient about markdown fences.
+  # The model is asked for bare JSON, but be lenient: try the whole reply,
+  # then each fenced block, then the outermost brace span. First candidate
+  # that decodes to an object wins.
   @doc false
   def extract_json(text) do
     text = String.trim(text)
 
-    text =
-      case Regex.run(~r/```(?:json)?\s*(\{.*\})\s*```/s, text) do
-        [_, inner] -> inner
-        nil -> text
-      end
+    candidates = [text] ++ fenced_blocks(text) ++ brace_span(text)
 
-    case Jason.decode(text) do
-      {:ok, %{} = object} -> {:ok, object}
-      {:ok, _other} -> {:error, :not_an_object}
-      {:error, err} -> {:error, {:invalid_json, Exception.message(err)}}
+    decoded = Enum.map(candidates, &Jason.decode/1)
+
+    cond do
+      object = Enum.find_value(decoded, &match_object/1) ->
+        {:ok, object}
+
+      Enum.any?(decoded, &match?({:ok, _}, &1)) ->
+        {:error, :not_an_object}
+
+      true ->
+        {:error, {:invalid_json, first_decode_error(decoded)}}
+    end
+  end
+
+  defp match_object({:ok, %{} = object}), do: object
+  defp match_object(_), do: nil
+
+  defp first_decode_error(decoded) do
+    Enum.find_value(decoded, "no JSON found", fn
+      {:error, err} -> Exception.message(err)
+      _ -> nil
+    end)
+  end
+
+  defp fenced_blocks(text) do
+    ~r/```(?:json)?\s*(.*?)```/s
+    |> Regex.scan(text, capture: :all_but_first)
+    |> Enum.map(fn [inner] -> String.trim(inner) end)
+  end
+
+  defp brace_span(text) do
+    with first when first != nil <- first_index(text, "{"),
+         last when last != nil and last > first <- last_index(text, "}") do
+      [binary_part(text, first, last - first + 1)]
+    else
+      _ -> []
+    end
+  end
+
+  defp first_index(text, char) do
+    case :binary.match(text, char) do
+      {pos, _} -> pos
+      :nomatch -> nil
+    end
+  end
+
+  defp last_index(text, char) do
+    case :binary.matches(text, char) do
+      [] -> nil
+      matches -> matches |> List.last() |> elem(0)
     end
   end
 

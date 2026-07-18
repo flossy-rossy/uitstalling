@@ -185,8 +185,8 @@ defmodule UitstallingWeb.DeckLiveTest do
     refute has_element?(view, "#slide-1 button[phx-click='select_slide']")
   end
 
-  test "the pipeline completes a queued request and the deck updates live", %{conn: conn} do
-    start_supervised!(Uitstalling.Decks.Pipeline)
+  test "the deck's worker completes a queued request and the deck updates live", %{conn: conn} do
+    start_supervised!({Uitstalling.Decks.DeckWorker, "demo"})
 
     {:ok, view, _html} = live(conn, "/deck/demo")
 
@@ -317,20 +317,139 @@ defmodule UitstallingWeb.DeckLiveTest do
     assert text == "authData || SHA-256(clientDataJSON)"
   end
 
-  test "escapes hostile text content" do
-    # Directly render a hostile-but-valid deck through the component
-    {:ok, deck} =
-      Uitstalling.Decks.parse(%{
-        "title" => "x",
-        "slides" => [
-          %{"layout" => "statement", "body" => "<script>alert(1)</script> ==<img src=x>=="}
-        ]
+  test "an image can be added to any slide via upload, renders, and deletes", %{conn: conn} do
+    on_exit(fn -> File.rm_rf("tmp/test-uploads") end)
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 1})
+    assert render(view) =~ "+ image"
+
+    view |> element("button[phx-value-key='image']") |> render_click()
+    assert render(view) =~ "UPLOAD AN IMAGE"
+
+    png = <<0x89, "PNG\r\n", 0x1A, "\n", 0, 0, 0, 13, "IHDR">>
+
+    image =
+      file_input(view, "#image-form", :image, [
+        %{name: "pic.png", content: png, type: "image/png"}
+      ])
+
+    render_upload(image, "pic.png")
+
+    view
+    |> form("#image-form", %{"alt" => "an uploaded test image"})
+    |> render_submit()
+
+    slide = Enum.at(deck_on_disk()["slides"], 1)
+    assert %{"asset_id" => "ast_" <> _} = slide["image"]
+
+    html = render(view)
+    assert html =~ "/a/#{slide["image"]["asset_id"]}"
+    assert html =~ "an uploaded test image"
+
+    # Delete via the standard block delete path
+    render_hook(view, "select_block", %{"index" => 1, "block" => "image"})
+    render_hook(view, "delete", %{})
+    refute Map.has_key?(Enum.at(deck_on_disk()["slides"], 1), "image")
+  end
+
+  test "describing an image queues a generation request and shows the spinner", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 1})
+    view |> element("button[phx-value-key='image']") |> render_click()
+
+    view
+    |> form("#image-gen-form", %{"prompt" => "an isometric phishing diagram"})
+    |> render_submit()
+
+    [request] = Decks.pending_requests()
+    assert request["type"] == "asset"
+    assert request["slide_id"] == "s1"
+    assert request["block"] == "image"
+    assert request["prompt"] == "an isometric phishing diagram"
+
+    # The image slot renders with the generating overlay while pending
+    html = render(view)
+    assert html =~ "generating"
+    assert html =~ "image on its way"
+  end
+
+  test "a queued generation can be canceled from the pending badge", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 1})
+    view |> element("button[phx-value-key='image']") |> render_click()
+
+    view
+    |> form("#image-gen-form", %{"prompt" => "something slow"})
+    |> render_submit()
+
+    [request] = Decks.pending_requests()
+    assert render(view) =~ "✕ image"
+
+    view |> element("button[phx-value-id='#{request["id"]}']", "✕ image") |> render_click()
+
+    assert Decks.pending_requests() == []
+    [stored] = Decks.load_requests()
+    assert stored["status"] == "canceled"
+    refute render(view) =~ "generating"
+  end
+
+  test "failed generations surface as a dismissible banner", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    request =
+      Decks.queue_request(%{
+        "type" => "asset",
+        "deck_id" => "demo",
+        "slide_id" => "s1",
+        "block" => "image",
+        "prompt" => "doomed"
       })
+
+    Decks.update_request(request["id"], %{"status" => "failed", "error" => ":timeout"})
+    send(view.pid, :queue_updated)
+
+    html = render(view)
+    assert html =~ "image failed"
+    assert html =~ ":timeout"
+
+    view |> element("button[phx-click='dismiss_failure']") |> render_click()
+    refute render(view) =~ "image failed"
+  end
+
+  test "escapes hostile text content" do
+    hostile = "<script>alert(1)</script> ==<img src=x>=="
+
+    # First line of defense: the validator rejects HTML at the boundary
+    assert {:error, [error]} =
+             Uitstalling.Decks.parse(%{
+               "title" => "x",
+               "slides" => [%{"layout" => "statement", "body" => hostile}]
+             })
+
+    assert error =~ "HTML tags are not allowed"
+
+    # Second line: even a slide that somehow bypassed validation renders
+    # escaped. Build the structs directly to exercise the renderer alone.
+    slide = %Uitstalling.Decks.Slide{
+      id: "s0",
+      layout: "statement",
+      tone: "default",
+      size: "md",
+      fields: %{"body" => hostile}
+    }
+
+    deck = %Uitstalling.Decks.Deck{title: "x", accent: "amber", theme: "noir", slides: [slide]}
 
     html =
       Phoenix.LiveViewTest.render_component(&UitstallingWeb.DeckComponents.slide/1,
         deck: deck,
-        slide: hd(deck.slides),
+        slide: slide,
         index: 0
       )
 

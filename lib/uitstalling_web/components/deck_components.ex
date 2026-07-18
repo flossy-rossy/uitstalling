@@ -203,6 +203,15 @@ defmodule UitstallingWeb.DeckComponents do
           accent_text={@accent_text}
         />
         <.block
+          :if={@f["image"] || MapSet.member?(@busy_blocks, "image")}
+          edit={@edit}
+          index={@index}
+          path="image"
+          busy_blocks={@busy_blocks}
+        >
+          <.asset_image image={@f["image"]} />
+        </.block>
+        <.block
           :if={@slide.footnote}
           edit={@edit}
           index={@index}
@@ -520,6 +529,55 @@ defmodule UitstallingWeb.DeckComponents do
         </div>
       </.block>
     </div>
+    """
+  end
+
+  # ----- Image part -------------------------------------------------------------
+  #
+  # The app-managed image attached to any layout: an asset reference, never a
+  # raw URL — the renderer builds the /a/:id path, so deck JSON can't point an
+  # <img> anywhere else. "full" spans the content column in the 16:9 frame;
+  # "side" (default) is a restrained inset.
+
+  attr :image, :map, default: nil
+
+  # No image yet (generation in flight — the block's busy overlay sits on
+  # top of this): an empty frame so the slide shows where it will land.
+  defp asset_image(%{image: nil} = assigns) do
+    ~H"""
+    <div class="mt-12 max-w-md aspect-video rounded-lg ring-1 ring-zinc-800 bg-zinc-900 flex items-center justify-center">
+      <p class="font-mono text-xs text-zinc-600">image on its way…</p>
+    </div>
+    """
+  end
+
+  defp asset_image(assigns) do
+    ~H"""
+    <figure class={[
+      "mt-12",
+      if(@image["treatment"] == "full", do: "w-full", else: "max-w-md")
+    ]}>
+      <div class={[
+        "rounded-lg overflow-hidden ring-1 ring-zinc-800 bg-zinc-900",
+        @image["treatment"] == "full" && "aspect-video"
+      ]}>
+        <img
+          src={"/a/#{@image["asset_id"]}"}
+          alt={@image["alt"] || ""}
+          loading="lazy"
+          class={[
+            "w-full",
+            if(@image["treatment"] == "full",
+              do: "h-full object-cover",
+              else: "max-h-72 object-contain"
+            )
+          ]}
+        />
+      </div>
+      <figcaption :if={@image["alt"]} class="mt-3 text-sm font-mono text-zinc-500">
+        {@image["alt"]}
+      </figcaption>
+    </figure>
     """
   end
 

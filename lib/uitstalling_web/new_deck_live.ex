@@ -152,7 +152,7 @@ defmodule UitstallingWeb.NewDeckLive do
       "prompt" => prompt
     })
 
-    Decks.Pipeline.kick()
+    Decks.DeckWorker.kick(deck_id)
 
     {:noreply, push_navigate(socket, to: ~p"/deck/#{deck_id}")}
   end

@@ -84,3 +84,6 @@ config :uitstalling, :webauthn,
 
 config :uitstalling,
   allowed_emails: ["REDACTED"]
+
+# Uploaded assets in dev live on local disk, served via /a/:id.
+config :uitstalling, :asset_storage, adapter: :local, dir: "priv/uploads"

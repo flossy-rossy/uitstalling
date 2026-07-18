@@ -19,21 +19,18 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
   alias Uitstalling.Decks.Agent.Claude
 
   @impl true
-  def generate_slide(deck, request, errors) do
+  def generate_slide(deck, request, retry) do
+    system = Claude.edit_system_prompt() <> "\n" <> Claude.edit_context_prompt(deck)
+
     with {:ok, api_key} <- Claude.fetch_api_key(),
          {:ok, text} <-
-           call_api(
-             api_key,
-             Claude.edit_system_prompt(),
-             Claude.edit_user_prompt(deck, request, errors),
-             max_tokens: 4096
-           ) do
+           call_api(api_key, system, Claude.edit_user_prompt(request, retry), max_tokens: 4096) do
       Claude.extract_json(text)
     end
   end
 
   @impl true
-  def generate_deck(request, errors) do
+  def generate_deck(request, retry) do
     # Whole-deck generation is the hard task: turn on reasoning (OpenRouter
     # normalizes this across models, ignores it where unsupported) and give
     # the budget headroom — reasoning tokens count against max_tokens.
@@ -42,7 +39,7 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
            call_api(
              api_key,
              Claude.create_system_prompt(),
-             Claude.create_user_prompt(request, errors),
+             Claude.create_user_prompt(request, retry),
              max_tokens: 32_000,
              reasoning: true
            ) do
@@ -74,7 +71,12 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
            receive_timeout: 300_000
          ) do
       {:ok, %Req.Response{status: 200, body: %{"choices" => [choice | _]}}} ->
-        {:ok, choice["message"]["content"] || ""}
+        # "length" = the reply (or its reasoning) exhausted max_tokens —
+        # content is a fragment or empty; report that instead of letting it
+        # surface as a misleading invalid-JSON error.
+        if choice["finish_reason"] == "length",
+          do: {:error, :truncated},
+          else: {:ok, choice["message"]["content"] || ""}
 
       {:ok, %Req.Response{status: status, body: resp_body}} ->
         Logger.warning(

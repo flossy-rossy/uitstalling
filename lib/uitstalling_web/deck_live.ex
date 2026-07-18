@@ -2,6 +2,7 @@ defmodule UitstallingWeb.DeckLive do
   use UitstallingWeb, :live_view
 
   alias Uitstalling.Accounts
+  alias Uitstalling.Assets
   alias Uitstalling.Decks
 
   import UitstallingWeb.DeckComponents
@@ -42,9 +43,12 @@ defmodule UitstallingWeb.DeckLive do
   }
 
   def mount(%{"id" => deck_id}, _session, socket) do
-    if Decks.exists?(deck_id) do
-      raw = Decks.load_raw!(deck_id)
-      {:ok, deck} = Decks.parse(raw)
+    with true <- Decks.exists?(deck_id),
+         raw = Decks.load_raw!(deck_id),
+         # Lenient on purpose: a stored deck can stop validating without
+         # anyone editing it (e.g. a referenced asset was deleted). That must
+         # degrade to a flash, not a 500 that bricks the deck.
+         {:ok, deck} <- Decks.parse(raw) do
       # Presenting is public-by-link; only an authorized author who owns the
       # deck may edit.
       user = socket.assigns.current_user
@@ -63,8 +67,22 @@ defmodule UitstallingWeb.DeckLive do
           selected: nil,
           undo: [],
           edit_error: nil,
-          pending: []
+          pending: [],
+          failures: [],
+          failures_since: DateTime.utc_now() |> DateTime.truncate(:second),
+          dismissed_failures: MapSet.new()
         )
+
+      socket =
+        if can_edit do
+          allow_upload(socket, :image,
+            accept: Assets.accepted_extensions(),
+            max_entries: 1,
+            max_file_size: Assets.max_bytes()
+          )
+        else
+          socket
+        end
 
       socket =
         if connected?(socket) do
@@ -76,7 +94,14 @@ defmodule UitstallingWeb.DeckLive do
 
       {:ok, socket}
     else
-      {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
+      false ->
+        {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
+
+      {:error, errors} ->
+        {:ok,
+         socket
+         |> put_flash(:error, "This presentation needs repair: #{hd(errors)}")
+         |> redirect(to: ~p"/")}
     end
   end
 
@@ -140,7 +165,38 @@ defmodule UitstallingWeb.DeckLive do
         >
           <span class="inline-block w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></span>
           {length(@pending)} generating
+          <button
+            :for={req <- @pending}
+            :if={@can_edit}
+            phx-click="cancel_request"
+            phx-value-id={req["id"]}
+            title={"cancel this #{request_label(req)}"}
+            class="ml-1 px-2 py-0.5 rounded ring-1 ring-zinc-700 text-zinc-400 hover:text-red-400 hover:ring-red-700 transition"
+          >
+            ✕ {request_label(req)}
+          </button>
         </span>
+      </div>
+
+      <div
+        :if={@can_edit and @failures != []}
+        class="fixed bottom-16 left-1/2 -translate-x-1/2 z-40 space-y-2 max-w-2xl"
+      >
+        <div
+          :for={failure <- @failures}
+          class="flex items-center gap-3 font-mono text-xs bg-red-950/95 text-red-200 ring-1 ring-red-800 rounded-lg px-4 py-2.5"
+        >
+          <span>
+            ⚠ {request_label(failure)} failed: {String.slice(failure["error"] || "unknown", 0, 120)}
+          </span>
+          <button
+            phx-click="dismiss_failure"
+            phx-value-id={failure["id"]}
+            class="text-red-400 hover:text-red-100 shrink-0"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
       <.options_panel
@@ -150,6 +206,7 @@ defmodule UitstallingWeb.DeckLive do
         value={@selected.block && Decks.get_block(@raw, @selected.index, @selected.block)}
         addable={addable_parts(@raw, @selected.index)}
         edit_error={@edit_error}
+        uploads={assigns[:uploads]}
       />
 
       <div
@@ -200,11 +257,12 @@ defmodule UitstallingWeb.DeckLive do
   # the slide-level panel is generation-oriented (agent prompt, add parts,
   # size, delete).
 
-  attr :selected, :map, required: true
-  attr :slide, Uitstalling.Decks.Slide, required: true
-  attr :value, :any, default: nil
-  attr :addable, :list, default: []
-  attr :edit_error, :string, default: nil
+  attr(:selected, :map, required: true)
+  attr(:slide, Uitstalling.Decks.Slide, required: true)
+  attr(:value, :any, default: nil)
+  attr(:addable, :list, default: [])
+  attr(:edit_error, :string, default: nil)
+  attr(:uploads, :any, default: nil)
 
   defp options_panel(assigns) do
     assigns = assign(assigns, :kind, assigns.selected.block && block_kind(assigns.selected.block))
@@ -218,8 +276,99 @@ defmodule UitstallingWeb.DeckLive do
         </p>
 
         <%= if @selected.block do %>
+          <%!-- Image part: upload + alt + treatment, no model involved --%>
+          <form
+            :if={@kind == :image and @uploads}
+            id="image-form"
+            phx-submit="save_image"
+            phx-change="validate_image"
+          >
+            <div :if={@value} class="mb-4">
+              <img
+                src={"/a/#{@value["asset_id"]}"}
+                alt={@value["alt"] || ""}
+                class="max-h-40 rounded-lg ring-1 ring-zinc-700"
+              />
+            </div>
+
+            <p class="font-mono text-zinc-500 text-xs mb-2">
+              {if @value, do: "REPLACE THE IMAGE", else: "UPLOAD AN IMAGE"} · png / jpg / webp / gif · ≤ 5MB
+            </p>
+            <.live_file_input
+              upload={@uploads.image}
+              class="w-full text-sm text-zinc-400 file:mr-4 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700"
+            />
+            <p :for={err <- upload_errors(@uploads.image)} class="mt-1 text-red-400 text-xs font-mono">
+              {upload_error_msg(err)}
+            </p>
+            <div :for={entry <- @uploads.image.entries} class="mt-2">
+              <p class="font-mono text-xs text-zinc-400">{entry.client_name} — {entry.progress}%</p>
+              <p
+                :for={err <- upload_errors(@uploads.image, entry)}
+                class="text-red-400 text-xs font-mono"
+              >
+                {upload_error_msg(err)}
+              </p>
+            </div>
+
+            <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">CAPTION / ALT TEXT (optional)</p>
+            <input
+              type="text"
+              name="alt"
+              value={@value && @value["alt"]}
+              class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+            />
+
+            <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">SIZE</p>
+            <div class="flex gap-4">
+              <label
+                :for={{treatment, label} <- [{"side", "inset"}, {"full", "full width"}]}
+                class="flex items-center gap-2 font-mono text-sm text-zinc-300 cursor-pointer"
+              >
+                <input
+                  type="radio"
+                  name="treatment"
+                  value={treatment}
+                  checked={((@value && @value["treatment"]) || "side") == treatment}
+                  class="text-amber-500 bg-zinc-950 border-zinc-700 focus:ring-amber-500"
+                /> {label}
+              </label>
+            </div>
+
+            <div class="mt-4 flex justify-end">
+              <button
+                type="submit"
+                class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+              >
+                Save image
+              </button>
+            </div>
+          </form>
+
+          <details :if={@kind == :image} class="mt-4">
+            <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
+              → OR DESCRIBE IT AND GENERATE
+            </summary>
+            <form id="image-gen-form" phx-submit="queue_image_gen" class="mt-2">
+              <textarea
+                name="prompt"
+                rows="3"
+                placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
+                class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+              ></textarea>
+              <div class="mt-3 flex justify-end">
+                <button
+                  type="submit"
+                  class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                >
+                  Generate image
+                </button>
+              </div>
+            </form>
+          </details>
+
           <%!-- Block level: edit the text exactly --%>
-          <form :if={@kind != :agent_only} phx-submit="save_text">
+          <form :if={@kind not in [:agent_only, :image]} phx-submit="save_text">
             <%= case @kind do %>
               <% :scalar -> %>
                 <textarea
@@ -264,7 +413,12 @@ defmodule UitstallingWeb.DeckLive do
             This part is best edited via the agent — describe the change below.
           </p>
 
-          <details class={@kind != :agent_only && "mt-4"} open={@kind == :agent_only}>
+          <%!-- The agent never touches images (app-managed key) --%>
+          <details
+            :if={@kind != :image}
+            class={@kind != :agent_only && "mt-4"}
+            open={@kind == :agent_only}
+          >
             <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
               → OR ASK THE AGENT
             </summary>
@@ -349,7 +503,7 @@ defmodule UitstallingWeb.DeckLive do
     """
   end
 
-  attr :placeholder, :string, required: true
+  attr(:placeholder, :string, required: true)
 
   defp agent_form(assigns) do
     ~H"""
@@ -376,6 +530,7 @@ defmodule UitstallingWeb.DeckLive do
   # map-shaped list items get one field each; table rows stay agent-only.
   defp block_kind(path) do
     case String.split(path, ".") do
+      ["image"] -> :image
       ["columns", _] -> :lines
       ["points", _] -> {:map, ~w(label body)}
       ["items", _] -> {:map, ~w(q a)}
@@ -384,6 +539,8 @@ defmodule UitstallingWeb.DeckLive do
       ["rows", _] -> :agent_only
       ["rows"] -> :agent_only
       [_scalar] -> :scalar
+      # Anything else (incl. depth-3 paths) is edited via the agent for now
+      _ -> :agent_only
     end
   end
 
@@ -398,7 +555,9 @@ defmodule UitstallingWeb.DeckLive do
   # AUTHORIZE every mutating event server-side — a client can push these
   # regardless of what the UI renders. Non-authors get a no-op.
   @edit_events ~w(toggle_edit select_block select_slide save_text set_size
-                  add_block delete delete_slide undo queue_edit)
+                  add_block delete delete_slide undo queue_edit
+                  save_image validate_image queue_image_gen
+                  cancel_request dismiss_failure)
 
   def handle_event(event, _params, %{assigns: %{can_edit: false}} = socket)
       when event in @edit_events do
@@ -410,8 +569,13 @@ defmodule UitstallingWeb.DeckLive do
   end
 
   def handle_event("select_block", %{"index" => index, "block" => block}, socket) do
-    with {:ok, index} <- parse_index(socket, index) do
+    # `block` is client-supplied — a path the parser rejects is ignored
+    # rather than crashing pattern matches downstream.
+    with {:ok, index} <- parse_index(socket, index),
+         {:ok, _parsed} <- Uitstalling.Decks.BlockPath.parse(block) do
       {:noreply, assign(socket, selected: %{index: index, block: block}, edit_error: nil)}
+    else
+      _ -> {:noreply, socket}
     end
   end
 
@@ -469,6 +633,13 @@ defmodule UitstallingWeb.DeckLive do
     {:noreply, commit(socket, Decks.put_slide_key(socket.assigns.raw, index, "size", size))}
   end
 
+  # Images have no text placeholder to commit — adding one just opens the
+  # image editor; the slide changes only when an upload is saved.
+  def handle_event("add_block", %{"key" => "image"}, socket) do
+    %{index: index} = socket.assigns.selected
+    {:noreply, assign(socket, selected: %{index: index, block: "image"}, edit_error: nil)}
+  end
+
   # Adds a valid placeholder through the normal commit path (undo-able), then
   # drops straight into the editor for the new part.
   def handle_event("add_block", %{"key" => key}, socket) do
@@ -498,6 +669,68 @@ defmodule UitstallingWeb.DeckLive do
   def handle_event("delete", _params, socket) do
     %{index: index, block: block} = socket.assigns.selected
     {:noreply, commit(socket, Decks.delete_block(socket.assigns.raw, index, block))}
+  end
+
+  # ----- Images (app-managed asset references) ----------------------------------
+
+  def handle_event("validate_image", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("queue_image_gen", %{"prompt" => prompt}, socket) do
+    prompt = String.trim(prompt)
+
+    if prompt == "" do
+      {:noreply, socket}
+    else
+      %{index: index} = socket.assigns.selected
+      slide = Enum.at(socket.assigns.deck.slides, index)
+
+      Decks.queue_request(%{
+        "type" => "asset",
+        "deck_id" => socket.assigns.deck_id,
+        "slide_id" => slide.id,
+        "block" => "image",
+        "prompt" => prompt
+      })
+
+      Phoenix.PubSub.broadcast_from(
+        Uitstalling.PubSub,
+        self(),
+        socket.assigns.topic,
+        :queue_updated
+      )
+
+      Decks.DeckWorker.kick(socket.assigns.deck_id)
+
+      {:noreply, socket |> assign(selected: nil) |> refresh_pending()}
+    end
+  end
+
+  def handle_event("save_image", params, socket) do
+    %{index: index} = socket.assigns.selected
+
+    consumed =
+      consume_uploaded_entries(socket, :image, fn %{path: path}, _entry ->
+        {:ok, Assets.create_upload(socket.assigns.current_user.id, path)}
+      end)
+
+    existing = Decks.get_block(socket.assigns.raw, index, "image")
+
+    case {consumed, existing} do
+      {[{:ok, asset}], _} ->
+        {:noreply, save_image_block(socket, index, asset.id, params)}
+
+      {[{:error, reason}], _} ->
+        {:noreply, assign(socket, edit_error: upload_failure(reason))}
+
+      {[], %{"asset_id" => asset_id}} ->
+        # No new file — just updating alt/treatment on the existing image
+        {:noreply, save_image_block(socket, index, asset_id, params)}
+
+      {[], nil} ->
+        {:noreply, assign(socket, edit_error: "Choose an image file first")}
+    end
   end
 
   def handle_event("delete_slide", _params, socket) do
@@ -552,12 +785,44 @@ defmodule UitstallingWeb.DeckLive do
         :queue_updated
       )
 
-      Decks.Pipeline.kick()
+      Decks.DeckWorker.kick(socket.assigns.deck_id)
 
       {:noreply,
        socket
        |> assign(selected: nil)
        |> refresh_pending()}
+    end
+  end
+
+  # Cancel a queued/in-flight generation for this deck: the row flip is final
+  # and the deck's worker checks it before persisting anything — a result
+  # arriving after this click is discarded.
+  def handle_event("cancel_request", %{"id" => id}, socket) do
+    with {id, ""} <- Integer.parse(to_string(id)),
+         true <- Enum.any?(socket.assigns.pending, &(&1["id"] == id)) do
+      Decks.cancel_request(id)
+
+      Phoenix.PubSub.broadcast_from(
+        Uitstalling.PubSub,
+        self(),
+        socket.assigns.topic,
+        :queue_updated
+      )
+
+      {:noreply, refresh_pending(socket)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("dismiss_failure", %{"id" => id}, socket) do
+    case Integer.parse(to_string(id)) do
+      {id, ""} ->
+        socket = update(socket, :dismissed_failures, &MapSet.put(&1, id))
+        {:noreply, refresh_pending(socket)}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -572,7 +837,7 @@ defmodule UitstallingWeb.DeckLive do
   # LiveView diffing means only the changed parts re-render in the browser.
   def handle_info(:deck_updated, socket) do
     {:noreply,
-     socket |> load_deck(Decks.load_raw!(socket.assigns.deck_id)) |> assign(selected: nil)}
+     socket |> reload_deck(Decks.load_raw!(socket.assigns.deck_id)) |> assign(selected: nil)}
   end
 
   def handle_info(:queue_updated, socket) do
@@ -582,11 +847,23 @@ defmodule UitstallingWeb.DeckLive do
   # ----- Helpers ----------------------------------------------------------------
 
   defp refresh_pending(socket) do
+    # open_requests includes the one the pipeline is processing right now —
+    # the spinner must not vanish the moment work starts.
     pending =
-      Enum.filter(Decks.pending_requests(), &(&1["deck_id"] == socket.assigns.deck_id))
+      Enum.filter(Decks.open_requests(), &(&1["deck_id"] == socket.assigns.deck_id))
 
-    assign(socket, pending: pending)
+    # Failures since this session opened, minus the ones the user dismissed —
+    # a generation that dies must say so, not just stop spinning.
+    failures =
+      Decks.recent_failed_requests(socket.assigns.deck_id, socket.assigns.failures_since)
+      |> Enum.reject(&MapSet.member?(socket.assigns.dismissed_failures, &1["id"]))
+
+    assign(socket, pending: pending, failures: failures)
   end
+
+  defp request_label(%{"type" => "create"}), do: "deck"
+  defp request_label(%{"type" => "asset"}), do: "image"
+  defp request_label(_request), do: "edit"
 
   defp pending_specs(pending) do
     for %{"slide_id" => slide_id} = request <- pending, request["type"] != "create" do
@@ -596,10 +873,40 @@ defmodule UitstallingWeb.DeckLive do
 
   defp creating?(pending), do: Enum.any?(pending, &(&1["type"] == "create"))
 
-  # Which parts this slide can gain: missing optional scalars + list appends.
+  defp save_image_block(socket, index, asset_id, params) do
+    image =
+      %{"asset_id" => asset_id}
+      |> maybe_put("alt", String.trim(params["alt"] || ""))
+      |> maybe_put("treatment", if(params["treatment"] == "full", do: "full"))
+
+    commit(socket, Decks.put_block(socket.assigns.raw, index, "image", image))
+  end
+
+  defp maybe_put(map, _key, value) when value in [nil, ""], do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp upload_failure(:too_large), do: "That file is over #{Assets.max_bytes()} bytes"
+
+  defp upload_failure(:unsupported_type),
+    do: "That file isn't a supported image (png/jpg/webp/gif)"
+
+  defp upload_failure(reason), do: "Upload failed: #{inspect(reason)}"
+
+  defp upload_error_msg(:too_large), do: "file is too large (max 5MB)"
+  defp upload_error_msg(:not_accepted), do: "not an accepted image type"
+  defp upload_error_msg(:too_many_files), do: "one image at a time"
+  defp upload_error_msg(other), do: "upload error: #{inspect(other)}"
+
+  # Which parts this slide can gain: missing optional scalars + list appends
+  # + an image (any layout can carry one).
   defp addable_parts(raw, index) do
     raw_slide = Enum.at(raw["slides"], index) || %{}
     layout = raw_slide["layout"]
+
+    image =
+      if Map.has_key?(raw_slide, "image") or layout == "media",
+        do: [],
+        else: [{"image", "image"}]
 
     scalars =
       (~w(kicker footnote) ++ Map.get(@addable_scalars, layout, []))
@@ -618,7 +925,7 @@ defmodule UitstallingWeb.DeckLive do
           [{label, key}]
       end
 
-    scalars ++ lists
+    image ++ scalars ++ lists
   end
 
   defp list_placeholder("columns", _slide), do: ["New bullet…"]
@@ -654,10 +961,21 @@ defmodule UitstallingWeb.DeckLive do
     end
   end
 
+  # For raw this view just validated (commit/undo) — parse cannot fail.
   defp load_deck(socket, raw) do
     {:ok, deck} = Decks.parse(raw)
     index = min(socket.assigns.index, length(deck.slides) - 1)
     assign(socket, raw: raw, deck: deck, index: index, page_title: deck.title)
+  end
+
+  # For raw that arrived from outside this view (a :deck_updated broadcast) —
+  # if it stopped validating (e.g. an asset vanished), keep showing the last
+  # good state instead of crashing the LiveView.
+  defp reload_deck(socket, raw) do
+    case Decks.parse(raw) do
+      {:ok, _deck} -> load_deck(socket, raw)
+      {:error, errors} -> put_flash(socket, :error, "Deck update not shown: #{hd(errors)}")
+    end
   end
 
   defp goto(socket, index, mode) do

@@ -2,23 +2,74 @@ defmodule Uitstalling.Decks.Agent.Fake do
   @moduledoc """
   Deterministic test agent. Slide edits prefix the slide's main text field
   with the request prompt; deck creation returns a small fixed deck titled
-  after the prompt. Prompts starting with "FAIL:" return invalid JSON to
-  exercise the validate-retry-fail path.
+  after the prompt.
+
+  Prompt prefixes script failure modes so pipeline tests can drive the
+  repair loop:
+
+  - "FAIL:"           — invalid content every attempt (exhausts retries)
+  - "GARBAGE_THEN_OK:" — {:error, {:invalid_json, ...}} on the first attempt,
+    then the normal edit; asserts the retry carried the repair errors
+  - "WRONG_ID:"       — the normal edit but with a foreign "id" (keep_id must
+    override it)
+  - "SCOPE_THEN_OK:"  — first attempt also rewrites a field outside the
+    requested block; on retry (scope error received) behaves
   """
 
   @behaviour Uitstalling.Decks.Agent
 
   @impl true
-  def generate_slide(deck, request, _errors) do
-    if String.starts_with?(request["prompt"], "FAIL:") do
-      {:ok, %{"layout" => "hero_banner", "html" => "<h1>nope</h1>"}}
-    else
-      edit_slide(deck, request)
+  def generate_slide(deck, request, retry) do
+    prompt = request["prompt"]
+
+    cond do
+      String.starts_with?(prompt, "FAIL:") ->
+        {:ok, %{"layout" => "hero_banner", "html" => "<h1>nope</h1>"}}
+
+      String.starts_with?(prompt, "GARBAGE_THEN_OK:") ->
+        case retry do
+          nil ->
+            {:error, {:invalid_json, "unexpected token at position 0"}}
+
+          %{errors: [error | _]} ->
+            true = error =~ "invalid JSON"
+            edit_slide(deck, request)
+        end
+
+      String.starts_with?(prompt, "WRONG_ID:") ->
+        with {:ok, slide} <- edit_slide(deck, request) do
+          {:ok, Map.put(slide, "id", "hijacked-id")}
+        end
+
+      String.starts_with?(prompt, "IMAGE_VANDAL:") ->
+        with {:ok, slide} <- edit_slide(deck, request) do
+          {:ok, Map.put(slide, "image", %{"asset_id" => "hax"})}
+        end
+
+      String.starts_with?(prompt, "WANTS_IMAGE:") ->
+        with {:ok, slide} <- edit_slide(deck, request) do
+          {:ok, Map.put(slide, "image_request", %{"subject" => "a diagram of the login flow"})}
+        end
+
+      String.starts_with?(prompt, "SCOPE_THEN_OK:") ->
+        with {:ok, slide} <- edit_slide(deck, request) do
+          case retry do
+            nil ->
+              {:ok, Map.put(slide, "kicker", "COLLATERAL DAMAGE")}
+
+            %{errors: [error | _]} ->
+              true = error =~ "outside"
+              {:ok, slide}
+          end
+        end
+
+      true ->
+        edit_slide(deck, request)
     end
   end
 
   @impl true
-  def generate_deck(request, _errors) do
+  def generate_deck(request, _retry) do
     if String.starts_with?(request["prompt"], "FAIL:") do
       {:ok, %{"title" => "bad", "slides" => [%{"layout" => "hero_banner"}]}}
     else
@@ -39,17 +90,27 @@ defmodule Uitstalling.Decks.Agent.Fake do
   end
 
   defp edit_slide(deck, request) do
-    slide =
-      Enum.find(deck["slides"], &(&1["id"] == request["slide_id"])) ||
-        Enum.at(deck["slides"], request["slide_index"])
+    slide = Enum.find(deck["slides"], &(&1["id"] == request["slide_id"]))
 
-    key =
-      cond do
-        Map.has_key?(slide, "heading") -> "heading"
-        Map.has_key?(slide, "body") -> "body"
-        true -> "kicker"
-      end
+    if is_nil(slide) do
+      # A real model asked to edit a slide that's gone from the deck it was
+      # shown would still hallucinate SOME reply — the pipeline (not the
+      # agent) is responsible for noticing the target no longer exists.
+      {:ok,
+       %{
+         "id" => request["slide_id"],
+         "layout" => "statement",
+         "body" => "AGENT: #{request["prompt"]}"
+       }}
+    else
+      key =
+        cond do
+          Map.has_key?(slide, "heading") -> "heading"
+          Map.has_key?(slide, "body") -> "body"
+          true -> "kicker"
+        end
 
-    {:ok, Map.put(slide, key, "AGENT: #{request["prompt"]}")}
+      {:ok, Map.put(slide, key, "AGENT: #{request["prompt"]}")}
+    end
   end
 end

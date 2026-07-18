@@ -14,7 +14,17 @@ defmodule Uitstalling.Decks do
   designed to be fed straight back to the model as a retry prompt.
   """
 
-  alias Uitstalling.Decks.{Deck, Slide}
+  alias Uitstalling.Decks.{BlockPath, Deck, Slide}
+
+  # Current document version, stamped by migrate/1. Bump when a stored deck
+  # needs upgrading before it can pass the current validator.
+  @doc_version 1
+
+  # Ceilings on what a generation (or import) may contain. Generous for real
+  # decks, tight enough that a runaway model can't persist megabytes.
+  @max_slides 40
+  @max_list_items 24
+  @max_string_bytes 4_000
 
   @accents ~w(amber sky emerald rose violet cyan)
   @tones ~w(default accent danger light)
@@ -27,6 +37,13 @@ defmodule Uitstalling.Decks do
 
   # Keys every slide may carry, regardless of layout.
   @common_keys ~w(id layout tone size kicker footnote notes)
+
+  # Keys the APP manages on a slide — valid in the document, but the model is
+  # told never to emit them and the pipeline strips-and-restores them around
+  # every agent edit. "image" references a stored asset by id (the model can't
+  # hallucinate one into existence; the UI attaches them).
+  @app_keys ~w(image)
+  @image_treatments ~w(side full)
 
   # Layout-specific keys. Anything outside common + these is rejected —
   # strictness is the point: the model picks from the design system,
@@ -43,6 +60,21 @@ defmodule Uitstalling.Decks do
     "faq" => ~w(heading items)
   }
   @layouts Map.keys(@layout_keys)
+
+  # Which of a layout's keys the validator requires — kept next to
+  # @layout_keys so schema_prompt/0 can state requiredness instead of letting
+  # the model discover it by burning a retry.
+  @layout_required %{
+    "title" => ~w(heading),
+    "statement" => ~w(body),
+    "bullets" => ~w(heading columns),
+    "points" => ~w(heading points),
+    "flow" => ~w(steps),
+    "big_code" => ~w(code),
+    "table" => ~w(columns rows),
+    "media" => ~w(kind),
+    "faq" => ~w(items)
+  }
 
   def accents, do: @accents
   def tones, do: @tones
@@ -78,18 +110,40 @@ defmodule Uitstalling.Decks do
   def schema_prompt do
     layouts =
       Enum.map_join(@layout_keys, "\n", fn {layout, keys} ->
-        "- \"#{layout}\": layout-specific keys: #{Enum.join(keys, ", ")}"
+        required = @layout_required[layout]
+
+        parts =
+          [
+            required != [] && "required: #{Enum.join(required, ", ")}",
+            keys != required && "optional: #{Enum.join(keys -- required, ", ")}"
+          ]
+          |> Enum.filter(&is_binary/1)
+          |> Enum.join("; ")
+
+        "- \"#{layout}\": #{parts}"
       end)
 
     """
     A deck is a JSON object: {"title", "accent", "theme"?, "voice"?, "slides": [...]}.
     Each slide is a JSON object with a required "layout" plus keys for that layout.
 
-    Layouts:
+    Layouts (with their required and optional keys):
     #{layouts}
 
     Keys allowed on EVERY slide: #{Enum.join(@common_keys, ", ")}.
     Any other key is rejected by the validator.
+    Required string fields must be NON-EMPTY. Slide ids must be unique.
+
+    IMAGES ON SLIDES: NEVER include an "image" key — existing images are
+    managed by the app and preserved automatically. If (and only if) the
+    request asks for a new or different image, include
+    "image_request": {"subject": "<one sentence describing the image>"}
+    at the top level of the slide object — the app generates and attaches it.
+
+    Limits (the validator rejects anything larger):
+    - at most #{@max_slides} slides per deck
+    - at most #{@max_list_items} items in any list (columns, points, steps, rows, items)
+    - at most #{@max_string_bytes} characters in any single text field
 
     Enums (the ONLY allowed values):
     - accent: #{Enum.join(@accents, ", ")}
@@ -138,35 +192,95 @@ defmodule Uitstalling.Decks do
   end
 
   @doc "Whether a deck with this id exists."
-  def exists?(deck_id), do: Repo.exists?(from d in Stored, where: d.id == ^deck_id)
+  def exists?(deck_id), do: Repo.exists?(from(d in Stored, where: d.id == ^deck_id))
 
   @doc "The user id that owns a deck, or nil."
   def owner_id(deck_id) do
-    Repo.one(from d in Stored, where: d.id == ^deck_id, select: d.user_id)
+    Repo.one(from(d in Stored, where: d.id == ^deck_id, select: d.user_id))
   end
 
   @doc "Whether `user_id` owns the deck (nil user never owns)."
   def owned_by?(_deck_id, nil), do: false
   def owned_by?(deck_id, user_id), do: owner_id(deck_id) == user_id
 
-  @doc "A user's decks as `{id, %Deck{}}`, newest first."
+  @doc """
+  A user's decks as `{id, %Deck{}}`, newest first. A stored deck that no
+  longer validates is surfaced as a degraded placeholder instead of silently
+  vanishing from the list.
+  """
   def list(user_id) do
-    Repo.all(from d in Stored, where: d.user_id == ^user_id, order_by: [desc: d.updated_at])
-    |> Enum.flat_map(fn row ->
-      case parse(row.data) do
-        {:ok, deck} -> [{row.id, deck}]
-        {:error, _} -> []
+    Repo.all(from(d in Stored, where: d.user_id == ^user_id, order_by: [desc: d.updated_at]))
+    |> Enum.map(fn row ->
+      raw = migrate(row.data)
+
+      case parse(raw) do
+        {:ok, deck} ->
+          {row.id, deck}
+
+        {:error, _} ->
+          title = if is_binary(raw["title"]), do: raw["title"], else: "Untitled"
+          {row.id, %Deck{title: "#{title} (needs repair)", slides: []}}
       end
     end)
   end
 
-  @doc "A deck's raw JSON map — the form mutations operate on."
+  @doc "A deck's raw JSON map — the form mutations operate on. Always migrated."
   def load_raw!(deck_id) do
-    Repo.get!(Stored, deck_id).data
+    Repo.get!(Stored, deck_id).data |> migrate()
+  end
+
+  @doc """
+  Upgrade a stored raw deck map to the current document version. Pure and
+  idempotent; applied on every load and before every save, so documents
+  written under older rules converge instead of failing a tightened validator.
+  Current migrations: stamp "v", backfill missing/duplicate slide ids.
+  """
+  def migrate(%{} = raw) do
+    raw
+    |> Map.put("v", @doc_version)
+    |> Map.update("slides", [], &backfill_ids/1)
+  end
+
+  # Give every slide a unique string id, preserving existing unique ones.
+  # Positional "sN" fallbacks skip past taken ids so a mint never collides.
+  defp backfill_ids(slides) when is_list(slides) do
+    taken =
+      for %{} = s <- slides, is_binary(s["id"]) and s["id"] != "", into: MapSet.new(), do: s["id"]
+
+    {slides, _seen} =
+      slides
+      |> Enum.with_index()
+      |> Enum.map_reduce(MapSet.new(), fn {slide, i}, seen ->
+        case slide do
+          %{"id" => id} when is_binary(id) and id != "" ->
+            if MapSet.member?(seen, id),
+              do:
+                {Map.put(slide, "id", mint_id(i, MapSet.union(taken, seen))),
+                 MapSet.put(seen, id)},
+              else: {slide, MapSet.put(seen, id)}
+
+          %{} ->
+            id = mint_id(i, MapSet.union(taken, seen))
+            {Map.put(slide, "id", id), MapSet.put(seen, id)}
+
+          other ->
+            {other, seen}
+        end
+      end)
+
+    slides
+  end
+
+  defp backfill_ids(other), do: other
+
+  defp mint_id(i, taken) do
+    id = "s#{i}"
+    if MapSet.member?(taken, id), do: mint_id(i + 1, taken), else: id
   end
 
   @doc "Create a new deck owned by `user_id`. Refuses invalid decks."
   def create_deck!(user_id, deck_id, %{} = raw) do
+    raw = migrate(raw)
     {:ok, _deck} = parse(raw)
 
     Repo.insert!(%Stored{id: deck_id, user_id: user_id, data: raw})
@@ -175,6 +289,7 @@ defmodule Uitstalling.Decks do
 
   @doc "Persist changes to an existing deck. Refuses anything that doesn't validate."
   def save!(deck_id, %{} = raw) do
+    raw = migrate(raw)
     {:ok, _deck} = parse(raw)
 
     {1, _} =
@@ -188,8 +303,8 @@ defmodule Uitstalling.Decks do
 
   @doc "Delete a deck and its queued requests."
   def delete_deck(deck_id) do
-    Repo.delete_all(from r in Request, where: r.deck_id == ^deck_id)
-    Repo.delete_all(from d in Stored, where: d.id == ^deck_id)
+    Repo.delete_all(from(r in Request, where: r.deck_id == ^deck_id))
+    Repo.delete_all(from(d in Stored, where: d.id == ^deck_id))
     :ok
   end
 
@@ -211,22 +326,26 @@ defmodule Uitstalling.Decks do
   end
 
   @doc """
-  Delete the block at `path` on the slide at `index`. A path is either a
-  scalar key (`"subheading"`) or a list element (`"points.1"`).
+  Delete the block at `path` on the slide at `index`. A path is a scalar key
+  (`"subheading"`), a list element (`"points.1"`), or a field inside a
+  map-shaped list element (`"steps.2.body"`). Unparseable paths are a no-op.
   """
   def delete_block(raw, index, path) do
     update_in(raw, ["slides", Access.at(index)], fn slide ->
-      case String.split(path, ".") do
-        [key] ->
+      case BlockPath.parse(path) do
+        {:ok, {:key, key}} ->
           Map.delete(slide, key)
 
-        [key, pos] ->
-          case {slide[key], Integer.parse(pos)} do
-            {list, {pos, ""}} when is_list(list) -> Map.put(slide, key, List.delete_at(list, pos))
+        {:ok, {:item, key, pos}} ->
+          case slide[key] do
+            list when is_list(list) -> Map.put(slide, key, List.delete_at(list, pos))
             _ -> slide
           end
 
-        _ ->
+        {:ok, {:field, key, pos, sub}} ->
+          update_list_item(slide, key, pos, &Map.delete(&1, sub))
+
+        :error ->
           slide
       end
     end)
@@ -237,39 +356,63 @@ defmodule Uitstalling.Decks do
     Map.update!(raw, "slides", &List.delete_at(&1, index))
   end
 
-  @doc "Fetch the value at a block path (`\"heading\"`, `\"points.1\"`)."
+  @doc "Fetch the value at a block path (`\"heading\"`, `\"points.1\"`, `\"steps.2.body\"`)."
   def get_block(raw, index, path) do
     slide = Enum.at(raw["slides"], index) || %{}
 
-    case String.split(path, ".") do
-      [key] ->
+    case BlockPath.parse(path) do
+      {:ok, {:key, key}} ->
         slide[key]
 
-      [key, pos] ->
-        case Integer.parse(pos) do
-          {i, ""} -> Enum.at(slide[key] || [], i)
+      {:ok, {:item, key, pos}} ->
+        Enum.at(slide[key] || [], pos)
+
+      {:ok, {:field, key, pos, sub}} ->
+        case Enum.at(slide[key] || [], pos) do
+          %{} = item -> item[sub]
           _ -> nil
         end
+
+      :error ->
+        nil
     end
   end
 
   @doc "Replace the value at a block path. Callers validate via `parse/1`."
   def put_block(raw, index, path, value) do
     update_in(raw, ["slides", Access.at(index)], fn slide ->
-      case String.split(path, ".") do
-        [key] ->
+      case BlockPath.parse(path) do
+        {:ok, {:key, key}} ->
           Map.put(slide, key, value)
 
-        [key, pos] ->
-          case {slide[key], Integer.parse(pos)} do
-            {list, {i, ""}} when is_list(list) ->
-              Map.put(slide, key, List.replace_at(list, i, value))
-
-            _ ->
-              slide
+        {:ok, {:item, key, pos}} ->
+          case slide[key] do
+            list when is_list(list) -> Map.put(slide, key, List.replace_at(list, pos, value))
+            _ -> slide
           end
+
+        {:ok, {:field, key, pos, sub}} ->
+          update_list_item(slide, key, pos, &Map.put(&1, sub, value))
+
+        :error ->
+          slide
       end
     end)
+  end
+
+  # Apply `fun` to the map-shaped item at `pos` in the list at `key`;
+  # anything that isn't a map in a list leaves the slide unchanged.
+  defp update_list_item(slide, key, pos, fun) do
+    case slide[key] do
+      list when is_list(list) ->
+        case Enum.at(list, pos) do
+          %{} = item -> Map.put(slide, key, List.replace_at(list, pos, fun.(item)))
+          _ -> slide
+        end
+
+      _ ->
+        slide
+    end
   end
 
   @doc "Append `item` to the list at `key` on the slide at `index`."
@@ -287,28 +430,109 @@ defmodule Uitstalling.Decks do
 
   @doc "All requests, oldest first, as flat maps."
   def load_requests do
-    Repo.all(from r in Request, order_by: [asc: r.id])
+    Repo.all(from(r in Request, order_by: [asc: r.id]))
     |> Enum.map(&request_map/1)
   end
 
-  @doc "Requests still waiting on the agent, oldest first."
+  @doc "All requests waiting to be picked up, oldest first."
   def pending_requests do
-    Repo.all(from r in Request, where: r.status == "pending", order_by: [asc: r.id])
+    Repo.all(from(r in Request, where: r.status == "pending", order_by: [asc: r.id]))
     |> Enum.map(&request_map/1)
   end
 
-  @doc "Append a pending request. Returns the stored request as a flat map."
-  def queue_request(%{} = attrs) do
-    Repo.insert!(%Request{
-      deck_id: attrs["deck_id"],
-      type: attrs["type"] || "edit",
-      status: "pending",
-      payload: attrs
-    })
-    |> request_map()
+  @doc "One deck's requests waiting to be picked up, oldest first — a DeckWorker's inbox."
+  def pending_deck_requests(deck_id) do
+    Repo.all(
+      from(r in Request,
+        where: r.status == "pending" and r.deck_id == ^deck_id,
+        order_by: [asc: r.id]
+      )
+    )
+    |> Enum.map(&request_map/1)
   end
 
-  @doc "Set status/error/done_at on the request with `id`."
+  @doc "Deck ids with unfinished (pending or in-flight) requests — kicked on boot."
+  def unfinished_deck_ids do
+    Repo.all(
+      from(r in Request,
+        where: r.status in ["pending", "processing"],
+        distinct: true,
+        select: r.deck_id
+      )
+    )
+  end
+
+  @doc "Requests not yet finished (pending or in flight) — what the UI shows as generating."
+  def open_requests do
+    Repo.all(
+      from(r in Request, where: r.status in ["pending", "processing"], order_by: [asc: r.id])
+    )
+    |> Enum.map(&request_map/1)
+  end
+
+  @doc """
+  Append a pending request. Returns the stored request as a flat map.
+  Raises on a structurally-bad payload — the UI sanitizes its inputs, so this
+  guards future non-UI callers, not user input.
+  """
+  def queue_request(%{} = attrs) do
+    type = attrs["type"] || "edit"
+
+    cond do
+      type not in ~w(edit create asset) ->
+        raise ArgumentError, "unknown request type #{inspect(type)}"
+
+      not exists?(attrs["deck_id"]) ->
+        raise ArgumentError, "deck #{inspect(attrs["deck_id"])} does not exist"
+
+      not (is_binary(attrs["prompt"]) and String.trim(attrs["prompt"]) != "") ->
+        raise ArgumentError, "request needs a non-empty prompt"
+
+      type == "create" and (attrs["theme"] not in @themes or attrs["accent"] not in @accents) ->
+        raise ArgumentError, "create request needs a valid theme and accent"
+
+      type in ~w(edit asset) and not is_binary(attrs["slide_id"]) ->
+        raise ArgumentError, "#{type} request needs a slide_id"
+
+      true ->
+        Repo.insert!(%Request{
+          deck_id: attrs["deck_id"],
+          type: type,
+          status: "pending",
+          payload: attrs
+        })
+        |> request_map()
+    end
+  end
+
+  @doc "Mark a request as picked up by the pipeline."
+  def mark_processing(id) do
+    Repo.update_all(from(r in Request, where: r.id == ^id), set: [status: "processing"])
+    :ok
+  end
+
+  @doc """
+  Fail one deck's requests stuck in "processing" — those belong to a worker
+  run that crashed mid-flight. Each DeckWorker sweeps only its own deck on
+  boot, so a request that crashes a worker is delivered at most twice and a
+  restarting worker can't touch another deck's in-flight request.
+  """
+  def fail_stale_processing(deck_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.update_all(
+      from(r in Request, where: r.status == "processing" and r.deck_id == ^deck_id),
+      set: [status: "failed", error: "interrupted by restart", done_at: now]
+    )
+
+    :ok
+  end
+
+  @doc """
+  Set status/error/done_at on the request with `id`. A canceled request is
+  final — a worker finishing after the user hit cancel must not resurrect it,
+  so this is a no-op on canceled rows.
+  """
   def update_request(id, %{} = attrs) do
     done_at =
       case attrs["done_at"] do
@@ -317,11 +541,45 @@ defmodule Uitstalling.Decks do
       end
 
     Repo.update_all(
-      from(r in Request, where: r.id == ^id),
+      from(r in Request, where: r.id == ^id and r.status != "canceled"),
       set: [status: attrs["status"], error: attrs["error"], done_at: done_at]
     )
 
     :ok
+  end
+
+  @doc """
+  Cancel a request (pending or in flight). The status flip is what the
+  workers observe: drains skip it, a finishing worker's update no-ops, and
+  the pipelines check `canceled?/1` before persisting results. Killing an
+  in-flight generation task is the AssetPipeline's job — callers nudge it
+  separately.
+  """
+  def cancel_request(id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.update_all(
+      from(r in Request, where: r.id == ^id and r.status in ["pending", "processing"]),
+      set: [status: "canceled", error: nil, done_at: now]
+    )
+
+    :ok
+  end
+
+  @doc "Whether the request was canceled (workers check before persisting)."
+  def canceled?(id) do
+    Repo.exists?(from(r in Request, where: r.id == ^id and r.status == "canceled"))
+  end
+
+  @doc "Failed requests for a deck finished at or after `since`, newest first."
+  def recent_failed_requests(deck_id, since) do
+    Repo.all(
+      from(r in Request,
+        where: r.deck_id == ^deck_id and r.status == "failed" and r.done_at >= ^since,
+        order_by: [desc: r.done_at]
+      )
+    )
+    |> Enum.map(&request_map/1)
   end
 
   # The pipeline/agent consume a flat map; managed columns override payload.
@@ -343,14 +601,29 @@ defmodule Uitstalling.Decks do
       opt_string(map, "voice", "deck") ++
       enum(map, "theme", @themes, "deck") ++
       case map["slides"] do
-        [_ | _] = slides ->
+        [_ | _] = slides when length(slides) <= @max_slides ->
           slides
           |> Enum.with_index()
           |> Enum.flat_map(fn {slide, i} -> validate_slide(slide, i) end)
+          |> Kernel.++(duplicate_id_errors(slides))
+
+        [_ | _] ->
+          ["deck.slides: must have at most #{@max_slides} slides"]
 
         _ ->
           ["deck.slides: must be a non-empty list"]
       end
+  end
+
+  # Slide ids address edits — a duplicate would let one edit land on the
+  # wrong slide, so it is rejected like any other schema violation.
+  defp duplicate_id_errors(slides) do
+    ids = for %{} = s <- slides, is_binary(s["id"]), do: s["id"]
+
+    case Enum.uniq(ids -- Enum.uniq(ids)) do
+      [] -> []
+      dups -> ["deck.slides: duplicate slide ids #{inspect(dups)} — every id must be unique"]
+    end
   end
 
   defp validate_slide(%{} = s, i) do
@@ -358,7 +631,7 @@ defmodule Uitstalling.Decks do
 
     case s["layout"] do
       layout when layout in @layouts ->
-        unknown = Map.keys(s) -- (@common_keys ++ @layout_keys[layout])
+        unknown = Map.keys(s) -- (@common_keys ++ @app_keys ++ @layout_keys[layout])
 
         unknown_errors =
           if unknown == [],
@@ -372,6 +645,7 @@ defmodule Uitstalling.Decks do
           opt_string(s, "kicker", path) ++
           opt_string(s, "footnote", path) ++
           opt_string(s, "notes", path) ++
+          validate_image(s["image"], path) ++
           validate_fields(layout, s, path)
 
       other ->
@@ -380,6 +654,38 @@ defmodule Uitstalling.Decks do
   end
 
   defp validate_slide(_s, i), do: ["slides[#{i}]: must be an object"]
+
+  # The image part references a stored asset by id. Only the shape is checked
+  # here — existence is a UI/render concern (a deleted asset degrades to a
+  # placeholder), which keeps parse/1 free of DB access. The id format check
+  # still rejects anything a model could invent by pattern.
+  defp validate_image(nil, _path), do: []
+
+  defp validate_image(%{} = image, path) do
+    id_errors =
+      case image["asset_id"] do
+        id when is_binary(id) ->
+          if id =~ ~r/^ast_[a-f0-9]{16}$/,
+            do: [],
+            else: ["#{path}.image.asset_id: not a valid asset id"]
+
+        _ ->
+          ["#{path}.image.asset_id: required string"]
+      end
+
+    unknown = Map.keys(image) -- ~w(asset_id alt treatment)
+
+    unknown_errors =
+      if unknown == [], do: [], else: ["#{path}.image: unknown keys #{inspect(unknown)}"]
+
+    id_errors ++
+      unknown_errors ++
+      opt_string(image, "alt", "#{path}.image") ++
+      enum(image, "treatment", @image_treatments, "#{path}.image")
+  end
+
+  defp validate_image(_other, path),
+    do: ["#{path}.image: must be an object with \"asset_id\""]
 
   defp validate_fields("title", s, p),
     do: req_string(s, "heading", p) ++ opt_string(s, "subheading", p)
@@ -394,9 +700,20 @@ defmodule Uitstalling.Decks do
           cols
           |> Enum.with_index()
           |> Enum.flat_map(fn {col, ci} ->
-            if is_list(col) and col != [] and Enum.all?(col, &is_binary/1),
-              do: [],
-              else: ["#{p}.columns[#{ci}]: must be a non-empty list of strings"]
+            cond do
+              not (is_list(col) and col != [] and Enum.all?(col, &is_binary/1)) ->
+                ["#{p}.columns[#{ci}]: must be a non-empty list of strings"]
+
+              length(col) > @max_list_items ->
+                ["#{p}.columns[#{ci}]: must have at most #{@max_list_items} bullets"]
+
+              true ->
+                col
+                |> Enum.with_index()
+                |> Enum.flat_map(fn {s, bi} ->
+                  check_text(s, "bullet", "#{p}.columns[#{ci}][#{bi}]")
+                end)
+            end
           end)
 
         _ ->
@@ -477,11 +794,11 @@ defmodule Uitstalling.Decks do
       row
       |> Enum.with_index()
       |> Enum.flat_map(fn
-        {cell, _ci} when is_binary(cell) ->
-          []
+        {cell, ci} when is_binary(cell) ->
+          check_text(cell, "cell", "#{path}[#{ci}]")
 
         {%{"text" => t} = cell, ci} when is_binary(t) ->
-          enum(cell, "tint", @tints, "#{path}[#{ci}]")
+          enum(cell, "tint", @tints, "#{path}[#{ci}]") ++ check_text(t, "cell", "#{path}[#{ci}]")
 
         {_other, ci} ->
           ["#{path}[#{ci}]: must be a string or {\"text\": \"...\", \"tint\": \"ok|warn|bad\"}"]
@@ -517,17 +834,28 @@ defmodule Uitstalling.Decks do
   defp safe_src(_src, _path), do: []
 
   defp local_asset_exists?(src) do
-    rel = src |> String.trim_leading("/") |> String.split("?") |> hd()
-    full = Path.join(Application.app_dir(:uitstalling, "priv/static"), rel)
-    # Also check the source tree so newly-added dev assets validate before a build.
-    File.exists?(full) or File.exists?(Path.join(["priv/static", rel]))
+    rel = src |> String.trim_leading("/") |> String.split(~r/[?#]/) |> hd()
+
+    # Path.expand collapses any ".." — a path that escapes the static root
+    # after expansion is rejected outright, so validation can't be used to
+    # probe (or accept) files outside priv/static.
+    Enum.any?(static_roots(), fn root ->
+      full = Path.expand(rel, root)
+      String.starts_with?(full, root <> "/") and File.exists?(full)
+    end)
+  end
+
+  defp static_roots do
+    # The built app dir, plus the source tree so newly-added dev assets
+    # validate before a build.
+    [Application.app_dir(:uitstalling, "priv/static"), Path.expand("priv/static")]
   end
 
   # ----- Validation helpers -------------------------------------------------
 
   defp req_string(map, key, path) do
     case map[key] do
-      s when is_binary(s) and s != "" -> []
+      s when is_binary(s) and s != "" -> check_text(s, key, "#{path}.#{key}")
       _ -> ["#{path}.#{key}: required non-empty string"]
     end
   end
@@ -535,9 +863,28 @@ defmodule Uitstalling.Decks do
   defp opt_string(map, key, path) do
     case map[key] do
       nil -> []
-      s when is_binary(s) -> []
+      s when is_binary(s) -> check_text(s, key, "#{path}.#{key}")
       _ -> ["#{path}.#{key}: must be a string"]
     end
+  end
+
+  # Content rules for any accepted string: bounded size, and the NO-HTML rule
+  # the prompt states. "code" is exempt from the tag check — code samples
+  # legitimately contain markup (everything is escaped at render regardless).
+  defp check_text(s, key, path) do
+    size_errors =
+      if byte_size(s) <= @max_string_bytes,
+        do: [],
+        else: ["#{path}: must be at most #{@max_string_bytes} characters"]
+
+    html_errors =
+      if key != "code" and s =~ ~r{</?[a-zA-Z][a-zA-Z0-9-]*(\s[^>]*)?>},
+        do: [
+          "#{path}: HTML tags are not allowed — use **strong**, ==accent==, ~~strike~~, `code`"
+        ],
+        else: []
+
+    size_errors ++ html_errors
   end
 
   defp enum(map, key, allowed, path) do
@@ -561,13 +908,16 @@ defmodule Uitstalling.Decks do
 
   defp list_of_objects(map, key, path, fun) do
     case map[key] do
-      [_ | _] = items ->
+      [_ | _] = items when length(items) <= @max_list_items ->
         items
         |> Enum.with_index()
         |> Enum.flat_map(fn
           {%{} = item, i} -> fun.(item, "#{path}.#{key}[#{i}]")
           {_other, i} -> ["#{path}.#{key}[#{i}]: must be an object"]
         end)
+
+      [_ | _] ->
+        ["#{path}.#{key}: must have at most #{@max_list_items} items"]
 
       _ ->
         ["#{path}.#{key}: required non-empty list"]

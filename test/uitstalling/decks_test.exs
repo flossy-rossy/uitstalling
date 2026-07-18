@@ -107,4 +107,163 @@ defmodule Uitstalling.DecksTest do
     assert {:error, [error]} = Decks.parse(deck)
     assert error =~ "slides[1].points[0].body"
   end
+
+  test "rejects duplicate slide ids" do
+    deck = %{
+      "title" => "Test",
+      "slides" => [
+        %{"id" => "s0", "layout" => "statement", "body" => "one"},
+        %{"id" => "s0", "layout" => "statement", "body" => "two"}
+      ]
+    }
+
+    assert {:error, [error]} = Decks.parse(deck)
+    assert error =~ "duplicate slide ids"
+  end
+
+  test "rejects oversized strings, oversized lists, and too many slides" do
+    assert {:error, [error]} = Decks.parse(minimal(%{"body" => String.duplicate("x", 5_000)}))
+    assert error =~ "at most"
+
+    many_points = for i <- 1..30, do: %{"label" => "P#{i}", "body" => "b"}
+
+    points_deck =
+      minimal(%{"layout" => "points", "heading" => "h", "points" => many_points})
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:error, errors} = Decks.parse(points_deck)
+    assert Enum.any?(errors, &(&1 =~ "at most"))
+
+    slides = for i <- 1..41, do: %{"id" => "s#{i}", "layout" => "statement", "body" => "b"}
+    assert {:error, [error]} = Decks.parse(%{"title" => "T", "slides" => slides})
+    assert error =~ "at most 40 slides"
+  end
+
+  test "rejects HTML tags in text fields but not in code" do
+    assert {:error, [error]} = Decks.parse(minimal(%{"body" => "hi <b>there</b>"}))
+    assert error =~ "HTML tags are not allowed"
+
+    # Plain angle brackets are not tags
+    assert {:ok, _} = Decks.parse(minimal(%{"body" => "x < y and y > z"}))
+
+    code_deck =
+      minimal(%{"layout" => "big_code", "code" => "<html><body>hi</body></html>"})
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:ok, _} = Decks.parse(code_deck)
+  end
+
+  test "rejects a local media src that escapes priv/static via traversal" do
+    deck =
+      minimal(%{"layout" => "media", "kind" => "image", "src" => "/../../../../../etc/passwd"})
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:error, errors} = Decks.parse(deck)
+    assert Enum.any?(errors, &(&1 =~ "does not exist"))
+  end
+
+  test "block paths support key, key.index, and key.index.field" do
+    raw = %{
+      "title" => "T",
+      "slides" => [
+        %{
+          "id" => "s0",
+          "layout" => "flow",
+          "steps" => [
+            %{"actor" => "A", "body" => "first"},
+            %{"actor" => "B", "body" => "second"}
+          ]
+        }
+      ]
+    }
+
+    assert Decks.get_block(raw, 0, "steps.1.body") == "second"
+
+    raw = Decks.put_block(raw, 0, "steps.1.body", "rewritten")
+    assert Decks.get_block(raw, 0, "steps.1.body") == "rewritten"
+
+    raw = Decks.delete_block(raw, 0, "steps.1.body")
+    assert Decks.get_block(raw, 0, "steps.1.body") == nil
+    assert Decks.get_block(raw, 0, "steps.1.actor") == "B"
+
+    # Unparseable / out-of-range paths are safe no-ops
+    assert Decks.get_block(raw, 0, "steps.nope") == nil
+    assert Decks.put_block(raw, 0, "..bad..", "x") == raw
+    assert Decks.delete_block(raw, 0, "steps.99.body") == raw
+  end
+
+  test "migrate stamps the version and backfills unique slide ids" do
+    raw = %{
+      "title" => "T",
+      "slides" => [
+        %{"layout" => "statement", "body" => "no id"},
+        %{"id" => "s1", "layout" => "statement", "body" => "explicit"},
+        %{"id" => "s1", "layout" => "statement", "body" => "duplicate"}
+      ]
+    }
+
+    migrated = Decks.migrate(raw)
+
+    assert migrated["v"] == 1
+    ids = Enum.map(migrated["slides"], & &1["id"])
+    assert Enum.all?(ids, &(is_binary(&1) and &1 != ""))
+    assert ids == Enum.uniq(ids)
+    # The explicit id survives on its first holder
+    assert Enum.at(migrated["slides"], 1)["id"] == "s1"
+    # Idempotent
+    assert Decks.migrate(migrated) == migrated
+  end
+
+  test "an image part is valid on any layout, with a strict shape" do
+    ok = %{"asset_id" => "ast_0123456789abcdef", "alt" => "a photo", "treatment" => "full"}
+    assert {:ok, _} = Decks.parse(minimal(%{"image" => ok}))
+
+    bullets =
+      %{
+        "title" => "T",
+        "slides" => [
+          %{
+            "layout" => "bullets",
+            "heading" => "h",
+            "columns" => [["one"]],
+            "image" => %{"asset_id" => "ast_0123456789abcdef"}
+          }
+        ]
+      }
+
+    assert {:ok, _} = Decks.parse(bullets)
+
+    # A model-inventable id shape is rejected
+    assert {:error, [error]} = Decks.parse(minimal(%{"image" => %{"asset_id" => "hax"}}))
+    assert error =~ "not a valid asset id"
+
+    assert {:error, [error]} =
+             Decks.parse(
+               minimal(%{
+                 "image" => %{"asset_id" => "ast_0123456789abcdef", "treatment" => "hero"}
+               })
+             )
+
+    assert error =~ "treatment"
+
+    assert {:error, [error]} =
+             Decks.parse(
+               minimal(%{
+                 "image" => %{"asset_id" => "ast_0123456789abcdef", "onclick" => "x()"}
+               })
+             )
+
+    assert error =~ "unknown keys"
+  end
+
+  test "schema_prompt stays in sync with the design system" do
+    prompt = Decks.schema_prompt()
+
+    for layout <- Decks.layouts(), do: assert(prompt =~ ~s("#{layout}"))
+    for accent <- Decks.accents(), do: assert(prompt =~ accent)
+    for theme <- Decks.themes(), do: assert(prompt =~ theme)
+    for tone <- Decks.tones(), do: assert(prompt =~ tone)
+    assert prompt =~ "required"
+    assert prompt =~ "NON-EMPTY"
+  end
 end

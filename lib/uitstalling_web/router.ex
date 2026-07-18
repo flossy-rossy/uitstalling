@@ -44,6 +44,9 @@ defmodule UitstallingWeb.Router do
   scope "/", UitstallingWeb do
     pipe_through :browser
 
+    # Asset bytes — public like the decks that embed them
+    get "/a/:id", AssetController, :show
+
     live_session :deck, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/", HomeLive, :index
       live "/new", NewDeckLive, :new
