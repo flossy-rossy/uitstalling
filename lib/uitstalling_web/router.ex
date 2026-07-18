@@ -11,22 +11,38 @@ defmodule UitstallingWeb.Router do
     plug UitstallingWeb.UserAuth
   end
 
+  # Browser-ish pipeline for the WebAuthn ceremony: it needs the session + CSRF
+  # (so it can't be a pure API pipeline), but the begin/complete endpoints
+  # respond JSON to fetch(), so it also negotiates json. Pages render html.
+  pipeline :auth_browser do
+    plug :accepts, ["html", "json"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {UitstallingWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug UitstallingWeb.UserAuth
+  end
+
   pipeline :api do
     plug :accepts, ["json"]
   end
 
+  scope "/auth", UitstallingWeb do
+    pipe_through :auth_browser
+
+    get "/login", AuthController, :login_page
+    get "/signup", AuthController, :signup_page
+    post "/login/begin", AuthController, :login_begin
+    post "/login/complete", AuthController, :login_complete
+    post "/register/begin", AuthController, :register_begin
+    post "/register/complete", AuthController, :register_complete
+    delete "/logout", AuthController, :logout
+    get "/logout", AuthController, :logout
+  end
+
   scope "/", UitstallingWeb do
     pipe_through :browser
-
-    # WebAuthn ceremony endpoints (controller, JSON) + auth pages
-    get "/auth/login", AuthController, :login_page
-    get "/auth/signup", AuthController, :signup_page
-    post "/auth/login/begin", AuthController, :login_begin
-    post "/auth/login/complete", AuthController, :login_complete
-    post "/auth/register/begin", AuthController, :register_begin
-    post "/auth/register/complete", AuthController, :register_complete
-    delete "/auth/logout", AuthController, :logout
-    get "/auth/logout", AuthController, :logout
 
     live_session :deck, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/", HomeLive, :index
