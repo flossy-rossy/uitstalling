@@ -36,4 +36,12 @@ defmodule Uitstalling.Decks.Agent do
   def impl do
     Application.get_env(:uitstalling, :deck_agent, Uitstalling.Decks.Agent.Claude)
   end
+
+  @doc "The provider API key both wire clients authenticate with."
+  def fetch_api_key do
+    case Application.get_env(:uitstalling, :agent_api_key) do
+      key when is_binary(key) and key != "" -> {:ok, key}
+      _ -> {:error, :missing_api_key}
+    end
+  end
 end

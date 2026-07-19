@@ -172,7 +172,7 @@ defmodule UitstallingWeb.DeckComponents do
         :if={@edit and not @busy}
         phx-click="select_slide"
         phx-value-index={@index}
-        class="absolute top-4 left-1/2 -translate-x-1/2 font-mono text-xs text-zinc-400 bg-zinc-900/90 ring-1 ring-zinc-700 rounded-full px-4 py-1.5 hover:text-amber-400 hover:ring-amber-500 transition"
+        class="absolute top-4 left-1/2 -translate-x-1/2 font-mono text-sm text-zinc-400 bg-zinc-900/90 ring-1 ring-zinc-700 rounded-full px-5 py-2.5 hover:text-amber-400 hover:ring-amber-500 transition"
       >
         ✎ click a part to edit its text · click here for slide options
       </button>

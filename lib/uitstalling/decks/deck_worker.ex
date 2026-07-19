@@ -33,6 +33,7 @@ defmodule Uitstalling.Decks.DeckWorker do
 
   alias Uitstalling.Assets
   alias Uitstalling.Decks
+  alias Uitstalling.Decks.Agent.Context
   alias Uitstalling.Decks.BlockPath
   alias Uitstalling.Decks.Op
   alias Uitstalling.Decks.Op.{DeleteField, ReplacePart, SetField}
@@ -421,8 +422,10 @@ defmodule Uitstalling.Decks.DeckWorker do
         # migrate/1 backfills any ids the model forgot (and de-dupes) before
         # validation, so a fresh deck never fails on id bookkeeping. App keys
         # a model hallucinated (an "image" with an invented asset id) are
-        # dropped rather than burning a retry.
+        # dropped rather than burning a retry. image_request keys are popped
+        # AFTER migrate so every slide id they hang off is real.
         raw = generated |> enforce_choices(request) |> strip_app_keys() |> Decks.migrate()
+        {raw, image_subjects} = pop_image_requests(raw)
 
         case {Decks.parse(raw), not_canceled(request)} do
           {{:ok, _deck}, :ok} ->
@@ -430,6 +433,10 @@ defmodule Uitstalling.Decks.DeckWorker do
             # The REAL title exists now — mint the public slug from it
             # (never from the "New presentation" stub).
             Decks.ensure_deck_slug(request["deck_id"])
+            # The title-slide visual (and any other requested images) queue
+            # behind this create — the drain loop picks them up next, so the
+            # deck's text is on screen while its images generate.
+            queue_created_images(request, image_subjects)
             :ok
 
           {_, {:error, :canceled}} ->
@@ -465,20 +472,61 @@ defmodule Uitstalling.Decks.DeckWorker do
     })
   end
 
-  # image_request is honored on edits only — on a create the deck id isn't
-  # even saved yet when the model replies, so requests are dropped (for now).
   defp strip_app_keys(%{"slides" => slides} = raw) when is_list(slides) do
     Map.put(
       raw,
       "slides",
       Enum.map(slides, fn
-        %{} = slide -> Map.drop(slide, @app_keys ++ ["image_request"])
+        %{} = slide -> Map.drop(slide, @app_keys)
         other -> other
       end)
     )
   end
 
   defp strip_app_keys(raw), do: raw
+
+  # Collect the model's image requests off a freshly-created deck (popped so
+  # they never reach the validator), keyed by the migrated slide ids.
+  defp pop_image_requests(%{"slides" => slides} = raw) when is_list(slides) do
+    {slides, subjects} =
+      Enum.map_reduce(slides, [], fn
+        %{} = slide, acc ->
+          {image_request, slide} = Map.pop(slide, "image_request")
+
+          case image_request do
+            %{"subject" => subject} when is_binary(subject) ->
+              if String.trim(subject) == "",
+                do: {slide, acc},
+                else: {slide, [{slide["id"], subject} | acc]}
+
+            _ ->
+              {slide, acc}
+          end
+
+        other, acc ->
+          {other, acc}
+      end)
+
+    {Map.put(raw, "slides", slides), Enum.reverse(subjects)}
+  end
+
+  defp pop_image_requests(raw), do: {raw, []}
+
+  # Cap what one create can spend on images — the contract asks for the title
+  # slide only, but a model that requests more mustn't fan out unbounded.
+  defp queue_created_images(request, subjects) do
+    subjects
+    |> Enum.take(3)
+    |> Enum.each(fn {slide_id, subject} ->
+      Decks.queue_request(%{
+        "type" => "asset",
+        "deck_id" => request["deck_id"],
+        "slide_id" => slide_id,
+        "block" => "image",
+        "prompt" => subject
+      })
+    end)
+  end
 
   # ----- Asset: generate an image and attach it to its slide ----------------------
 
@@ -494,9 +542,10 @@ defmodule Uitstalling.Decks.DeckWorker do
 
       slide ->
         owner_id = Decks.owner_id(request["deck_id"])
-        prompt = Assets.image_prompt(raw, slide, request["prompt"])
+        prompt = Context.image_prompt(raw, slide, request["prompt"])
 
-        with {:ok, asset} <- Assets.create_generated(owner_id, prompt) do
+        with {:ok, asset} <-
+               Assets.create_generated(owner_id, prompt, subject: request["prompt"]) do
           attach(request, asset)
         end
     end
@@ -517,9 +566,13 @@ defmodule Uitstalling.Decks.DeckWorker do
         index ->
           existing = Decks.get_block(raw, index, "image") || %{}
 
+          # No visible caption by default — the generation subject lives on
+          # the asset for the editor's regenerate flow, not as a footer. A
+          # caption/treatment the author set on a previous image survives.
           image =
-            %{"asset_id" => asset.id, "alt" => String.slice(request["prompt"], 0, 200)}
-            |> maybe_keep_treatment(existing)
+            %{"asset_id" => asset.id}
+            |> maybe_keep(existing, "alt")
+            |> maybe_keep(existing, "treatment")
 
           new_raw = Decks.put_block(raw, index, "image", image)
 
@@ -535,10 +588,12 @@ defmodule Uitstalling.Decks.DeckWorker do
     end
   end
 
-  defp maybe_keep_treatment(image, %{"treatment" => treatment}),
-    do: Map.put(image, "treatment", treatment)
-
-  defp maybe_keep_treatment(image, _existing), do: image
+  defp maybe_keep(image, existing, key) do
+    case existing[key] do
+      value when is_binary(value) and value != "" -> Map.put(image, key, value)
+      _ -> image
+    end
+  end
 
   # ----- Shared -----------------------------------------------------------------
 

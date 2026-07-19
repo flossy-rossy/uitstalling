@@ -104,13 +104,16 @@ defmodule UitstallingWeb.HomeLiveTest do
     # request done (status flips just after the deck is saved).
     start_supervised!({Decks.DeckWorker, deck_id})
 
+    # The create finishes, then the title-slide image it requested.
     assert_eventually(fn ->
       Decks.load_raw!(deck_id)["title"] == "FAKE DECK: the story of our product" and
-        match?([%{"status" => "done"}], Decks.load_requests())
+        Enum.all?(Decks.load_requests(), &(&1["status"] == "done"))
     end)
 
-    [request] = Decks.load_requests()
+    [request, image_request] = Decks.load_requests()
     assert request["target_slides"] == 11
+    assert image_request["type"] == "asset"
+    assert %{"asset_id" => _} = hd(Decks.load_raw!(deck_id)["slides"])["image"]
   end
 
   test "visiting a missing deck redirects home", %{conn: conn} do

@@ -405,6 +405,83 @@ defmodule UitstallingWeb.DeckLiveTest do
     refute render(view) =~ "generating"
   end
 
+  test "a generated image offers its own prompt back for a regenerate, with no footer",
+       %{conn: conn, user: user} do
+    {:ok, asset} =
+      Uitstalling.Assets.create_generated(user.id, "composed art-directed prompt",
+        subject: "a phishing proxy between a user and a bank"
+      )
+
+    Decks.save!("demo", Decks.put_block(deck_on_disk(), 1, "image", %{"asset_id" => asset.id}))
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    # No visible caption under a generated image — the prompt is editor-only
+    refute render(view) =~ "figcaption"
+
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => 1, "block" => "image"})
+
+    html = render(view)
+    assert html =~ "Regenerate image"
+    assert html =~ "a phishing proxy between a user and a bank"
+
+    view
+    |> form("#image-gen-form", %{"prompt" => "the same proxy, but as a subway map"})
+    |> render_submit()
+
+    [request] = Decks.pending_requests()
+    assert request["type"] == "asset"
+    assert request["prompt"] == "the same proxy, but as a subway map"
+  end
+
+  test "regenerate deck pulls up the original brief for editing and queues a create",
+       %{conn: conn} do
+    seeded =
+      Decks.queue_request(%{
+        "type" => "create",
+        "deck_id" => "demo",
+        "theme" => "noir",
+        "accent" => "amber",
+        "voice" => "sharp and technical",
+        "minutes" => 15,
+        "target_slides" => 11,
+        "prompt" => "phishing-resistant auth for a fintech team",
+        "research" => "FIDO2 adoption hit 30% in 2025"
+      })
+
+    Decks.update_request(seeded["id"], %{"status" => "done"})
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    view |> element("button", "regenerate deck") |> render_click()
+
+    # The original brief and research come back editable
+    html = render(view)
+    assert html =~ "REGENERATE THIS DECK"
+    assert html =~ "phishing-resistant auth for a fintech team"
+    assert html =~ "FIDO2 adoption hit 30% in 2025"
+
+    view
+    |> form("#regen-form", %{
+      "prompt" => "the same talk, but for executives",
+      "voice" => "boardroom-friendly, zero jargon",
+      "research" => ""
+    })
+    |> render_submit()
+
+    [request] = Decks.pending_requests()
+    assert request["type"] == "create"
+    assert request["prompt"] == "the same talk, but for executives"
+    assert request["theme"] == "noir"
+    assert request["voice"] == "boardroom-friendly, zero jargon"
+    refute Map.has_key?(request, "research")
+
+    # The create overlay takes over while it generates; undo holds the old deck
+    assert render(view) =~ "generating your presentation"
+    assert render(view) =~ "↶ undo"
+  end
+
   test "failed generations surface as a dismissible banner", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/deck/demo")
 

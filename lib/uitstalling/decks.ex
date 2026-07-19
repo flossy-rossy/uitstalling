@@ -641,6 +641,25 @@ defmodule Uitstalling.Decks do
     Repo.exists?(from(r in Request, where: r.id == ^id and r.status == "canceled"))
   end
 
+  @doc """
+  The most recent "create" request for a deck (any status), as a flat map —
+  the editor's regenerate flow prefills from its prompt/research. Nil for
+  decks that predate the request log.
+  """
+  def latest_create_request(deck_id) do
+    Repo.one(
+      from(r in Request,
+        where: r.deck_id == ^deck_id and r.type == "create",
+        order_by: [desc: r.id],
+        limit: 1
+      )
+    )
+    |> case do
+      nil -> nil
+      request -> request_map(request)
+    end
+  end
+
   @doc "Failed requests for a deck finished at or after `since`, newest first."
   def recent_failed_requests(deck_id, since) do
     Repo.all(

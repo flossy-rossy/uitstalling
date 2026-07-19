@@ -61,14 +61,18 @@ defmodule Uitstalling.Assets do
   Generate an image from a prompt (via the configured `Generator`) and store
   it as a new asset. The provider's bytes get the same sniff/size gate as an
   upload — a provider (or a compromised response) can't smuggle a non-image.
+
+  `opts[:subject]` is what gets stored as the asset's prompt: the author's
+  own words, so the image editor can offer them back for a regenerate. The
+  full composed prompt (art direction etc.) is reproducible and not stored.
   """
-  def create_generated(user_id, prompt) do
+  def create_generated(user_id, prompt, opts \\ []) do
     with {:ok, %{bytes: bytes}} <- Generator.impl().generate(prompt),
          :ok <- check_size(bytes),
          {:ok, content_type, ext} <-
            match_signature(binary_part(bytes, 0, min(16, byte_size(bytes)))) do
       insert_asset(user_id, "gen", {:bytes, bytes}, byte_size(bytes), content_type, ext,
-        prompt: prompt,
+        prompt: opts[:subject] || prompt,
         provider: Application.get_env(:uitstalling, :image_model, "openrouter")
       )
     else
@@ -129,48 +133,6 @@ defmodule Uitstalling.Assets do
   @doc "Generate a fresh asset id."
   def generate_id do
     "ast_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-  end
-
-  # Art direction per deck theme — images must sit ON the slide, not fight it.
-  @theme_direction %{
-    "noir" => "near-black background with warm amber accent lighting",
-    "midnight" => "deep navy background with cyan accent lighting"
-  }
-
-  @doc """
-  Compose the full generation prompt for an image on a slide: the subject
-  first, then the deck's art direction (theme, title, voice) and the slide's
-  own context (section kicker, heading) so the image belongs to THIS deck
-  and THIS moment in it — never a context-free stock-alike.
-  """
-  def image_prompt(raw, slide, subject) do
-    direction = @theme_direction[raw["theme"]] || @theme_direction["noir"]
-
-    slide_context =
-      [
-        is_binary(slide["kicker"]) && slide["kicker"] != "" && "section \"#{slide["kicker"]}\"",
-        is_binary(slide["heading"]) && slide["heading"] != "" &&
-          "slide heading \"#{slide["heading"]}\""
-      ]
-      |> Enum.filter(&is_binary/1)
-      |> case do
-        [] -> ""
-        parts -> "It illustrates the #{Enum.join(parts, ", ")}.\n"
-      end
-
-    voice =
-      case raw["voice"] do
-        v when is_binary(v) and v != "" -> "Tone: #{v}.\n"
-        _ -> ""
-      end
-
-    """
-    #{subject}
-
-    A 16:9 visual for one slide of a presentation titled "#{raw["title"]}".
-    #{slide_context}#{voice}Style: #{direction}; modern, minimal, high contrast; \
-    no embedded text or captions unless the subject explicitly asks for them.
-    """
   end
 
   # ----- Storage --------------------------------------------------------------

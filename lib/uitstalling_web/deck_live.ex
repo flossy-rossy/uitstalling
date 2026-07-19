@@ -82,6 +82,7 @@ defmodule UitstallingWeb.DeckLive do
           can_edit: can_edit,
           edit_mode: false,
           selected: nil,
+          regen: nil,
           undo: [],
           edit_error: nil,
           pending: [],
@@ -159,7 +160,7 @@ defmodule UitstallingWeb.DeckLive do
       <div class="fixed bottom-4 left-6 flex items-center gap-2">
         <.link
           navigate={~p"/"}
-          class="font-mono text-xs px-3 py-1.5 rounded ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
+          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
         >
           ← decks
         </.link>
@@ -167,7 +168,7 @@ defmodule UitstallingWeb.DeckLive do
           :if={@can_edit}
           phx-click="toggle_edit"
           class={[
-            "font-mono text-xs px-3 py-1.5 rounded ring-1 transition",
+            "font-mono text-sm px-4 py-2 rounded-lg ring-1 transition",
             if(@edit_mode,
               do: "bg-amber-500 text-zinc-950 ring-amber-400 font-bold",
               else: "bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400"
@@ -177,9 +178,16 @@ defmodule UitstallingWeb.DeckLive do
           {if @edit_mode, do: "✓ done", else: "✎ edit"}
         </button>
         <button
+          :if={@can_edit and @edit_mode}
+          phx-click="open_regen"
+          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
+        >
+          ↻ regenerate deck
+        </button>
+        <button
           :if={@undo != []}
           phx-click="undo"
-          class="font-mono text-xs px-3 py-1.5 rounded ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
+          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
         >
           ↶ undo ({length(@undo)})
         </button>
@@ -232,6 +240,8 @@ defmodule UitstallingWeb.DeckLive do
         edit_error={@edit_error}
         uploads={assigns[:uploads]}
       />
+
+      <.regen_panel :if={@regen} regen={@regen} />
 
       <div
         :if={creating?(@pending)}
@@ -289,7 +299,12 @@ defmodule UitstallingWeb.DeckLive do
   attr(:uploads, :any, default: nil)
 
   defp options_panel(assigns) do
-    assigns = assign(assigns, :kind, assigns.selected.block && block_kind(assigns.selected.block))
+    kind = assigns.selected.block && block_kind(assigns.selected.block)
+
+    assigns =
+      assigns
+      |> assign(:kind, kind)
+      |> assign(:gen_prompt, gen_prompt(kind, assigns.value))
 
     ~H"""
     <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6">
@@ -317,7 +332,7 @@ defmodule UitstallingWeb.DeckLive do
               </div>
 
               <p class="font-mono text-zinc-500 text-xs mb-2">
-                {if @value, do: "REPLACE THE IMAGE", else: "UPLOAD AN IMAGE"} · png / jpg / webp / gif · ≤ 5MB
+                {if @value, do: "UPLOAD A REPLACEMENT", else: "UPLOAD AN IMAGE"} · png / jpg / webp / gif · ≤ 5MB
               </p>
               <.live_file_input
                 upload={@uploads.image}
@@ -373,27 +388,31 @@ defmodule UitstallingWeb.DeckLive do
               </div>
             </form>
 
-            <details :if={@kind == :image} class="mt-4">
-              <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
-                → OR DESCRIBE IT AND GENERATE
-              </summary>
+            <div :if={@kind == :image} class="mt-6 pt-4 border-t border-zinc-800">
+              <p class="font-mono text-zinc-500 text-xs mb-2">
+                {cond do
+                  @gen_prompt -> "OR REGENERATE IT — tweak the prompt and go again"
+                  @value -> "OR DESCRIBE A NEW ONE AND GENERATE"
+                  true -> "OR DESCRIBE IT AND GENERATE"
+                end}
+              </p>
               <form id="image-gen-form" phx-submit="queue_image_gen" class="mt-2">
                 <textarea
                   name="prompt"
                   rows="3"
                   placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
                   class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-                ></textarea>
+                >{@gen_prompt}</textarea>
                 <div class="mt-3 flex justify-end">
                   <button
                     type="submit"
-                    class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                    class="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
                   >
-                    Generate image
+                    {if @gen_prompt, do: "Regenerate image", else: "Generate image"}
                   </button>
                 </div>
               </form>
-            </details>
+            </div>
 
             <%!-- Block level: edit the text exactly --%>
             <form :if={@kind not in [:agent_only, :image]} phx-submit="save_text">
@@ -442,16 +461,15 @@ defmodule UitstallingWeb.DeckLive do
             </p>
 
             <%!-- The agent never touches images (app-managed key) --%>
-            <details
+            <div
               :if={@kind != :image}
-              class={@kind != :agent_only && "mt-4"}
-              open={@kind == :agent_only}
+              class={@kind != :agent_only && "mt-6 pt-4 border-t border-zinc-800"}
             >
-              <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
-                → OR ASK THE AGENT
-              </summary>
+              <p :if={@kind != :agent_only} class="font-mono text-zinc-500 text-xs mb-2">
+                OR ASK THE AGENT TO WRITE IT
+              </p>
               <.agent_form placeholder={"e.g. reword this #{@selected.block} more simply"} />
-            </details>
+            </div>
           <% else %>
             <%!-- Slide level: generation-oriented --%>
             <p class="font-mono text-zinc-500 text-xs mb-2">DESCRIBE THE CHANGES</p>
@@ -464,13 +482,13 @@ defmodule UitstallingWeb.DeckLive do
                   :for={{label, key} <- @addable}
                   phx-click="add_block"
                   phx-value-key={key}
-                  class="px-3 py-1.5 rounded-lg font-mono text-xs ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+                  class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
                 >
                   + {label}
                 </button>
               </div>
               <p class="mt-2 font-mono text-zinc-600 text-xs">
-                adds a placeholder, then you write it — or ask the agent from its editor
+                opens the new part's editor — type it exactly, or have it generated
               </p>
             </div>
 
@@ -508,21 +526,109 @@ defmodule UitstallingWeb.DeckLive do
             <button
               :if={@selected.block}
               phx-click="delete"
-              class="px-4 py-2 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
+              class="px-5 py-2.5 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
             >
               Delete {@selected.block}
             </button>
             <button
               :if={is_nil(@selected.block)}
               phx-click="delete_slide"
-              class="px-4 py-2 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
+              class="px-5 py-2.5 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
             >
               Delete slide
             </button>
           </div>
           <button
             phx-click="cancel_edit"
-            class="px-4 py-2 rounded-lg text-zinc-400 hover:text-zinc-200"
+            class="px-5 py-2.5 rounded-lg text-zinc-300 ring-1 ring-zinc-700 hover:text-zinc-100 hover:ring-zinc-500"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # If the current image was generated, its stored prompt is the author's own
+  # subject — offered back so a regenerate starts from what produced this one.
+  defp gen_prompt(:image, %{"asset_id" => asset_id}) do
+    case Assets.get(asset_id) do
+      %{origin: "gen", prompt: prompt} when is_binary(prompt) -> prompt
+      _ -> nil
+    end
+  end
+
+  defp gen_prompt(_kind, _value), do: nil
+
+  # ----- Regenerate-deck panel ---------------------------------------------------
+  #
+  # The original create request (prompt + research grounding) offered back for
+  # editing; submitting queues a fresh create for this same deck.
+
+  attr(:regen, :map, required: true)
+
+  defp regen_panel(assigns) do
+    ~H"""
+    <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6">
+      <div class="w-full max-w-xl bg-zinc-900 ring-1 ring-zinc-700 rounded-xl max-h-[90dvh] flex flex-col overflow-hidden">
+        <p class="font-mono text-amber-400 text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
+          REGENERATE THIS DECK
+        </p>
+
+        <form
+          id="regen-form"
+          phx-submit="queue_regen"
+          class="flex-1 min-h-0 overflow-y-auto px-6 pb-2"
+        >
+          <p class="text-zinc-400 text-sm mb-4">
+            Rework the brief and generate the deck fresh — theme and length stay
+            as chosen ({@regen["theme"]}<span :if={@regen["minutes"]}> · {@regen["minutes"]} min</span>).
+            The current slides are replaced; undo brings them back.
+          </p>
+
+          <p class="font-mono text-zinc-500 text-xs mb-2">THE BRIEF</p>
+          <textarea
+            name="prompt"
+            rows="6"
+            placeholder="what the talk is about, and the main points to cover"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+          >{@regen["prompt"]}</textarea>
+
+          <p class="font-mono text-zinc-500 text-xs mt-4 mb-2">TONE &amp; AUDIENCE</p>
+          <input
+            type="text"
+            name="voice"
+            value={@regen["voice"]}
+            placeholder="e.g. sharp and technical, for a security-savvy crowd"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+          />
+
+          <p class="font-mono text-zinc-500 text-xs mt-4 mb-2">
+            RESEARCH / CONTEXT (optional{if @regen["research_filename"],
+              do: " — from #{@regen["research_filename"]}"})
+          </p>
+          <textarea
+            name="research"
+            rows="6"
+            placeholder="facts, numbers, names and quotes to ground the deck in"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans text-sm"
+          >{@regen["research"]}</textarea>
+
+          <div class="sticky bottom-0 mt-4 py-2 bg-zinc-900 flex justify-end">
+            <button
+              type="submit"
+              class="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+            >
+              Regenerate deck
+            </button>
+          </div>
+        </form>
+
+        <div class="shrink-0 px-6 py-4 border-t border-zinc-800 flex justify-end">
+          <button
+            phx-click="close_regen"
+            class="px-5 py-2.5 rounded-lg text-zinc-300 ring-1 ring-zinc-700 hover:text-zinc-100 hover:ring-zinc-500"
           >
             Close
           </button>
@@ -586,6 +692,7 @@ defmodule UitstallingWeb.DeckLive do
   @edit_events ~w(toggle_edit select_block select_slide save_text set_size
                   add_block delete delete_slide undo queue_edit
                   save_image validate_image queue_image_gen
+                  open_regen close_regen queue_regen
                   cancel_request dismiss_failure)
 
   def handle_event(event, _params, %{assigns: %{can_edit: false}} = socket)
@@ -783,6 +890,87 @@ defmodule UitstallingWeb.DeckLive do
         )
 
         {:noreply, socket |> assign(undo: rest) |> load_deck(previous)}
+    end
+  end
+
+  # ----- Regenerate the whole deck -----------------------------------------------
+
+  def handle_event("open_regen", _params, socket) do
+    # Prefill from the original create request; a deck that predates the
+    # request log (or was imported) still gets a usable form from its own
+    # stored choices.
+    base =
+      case Decks.latest_create_request(socket.assigns.deck_id) do
+        nil ->
+          raw = socket.assigns.raw
+
+          %{
+            "theme" => raw["theme"],
+            "accent" => raw["accent"],
+            "voice" => raw["voice"] || "",
+            "minutes" => nil,
+            "target_slides" => length(raw["slides"]),
+            "prompt" => ""
+          }
+
+        request ->
+          Map.take(
+            request,
+            ~w(theme accent voice minutes target_slides prompt research research_filename)
+          )
+      end
+
+    {:noreply, assign(socket, regen: base, selected: nil)}
+  end
+
+  def handle_event("close_regen", _params, socket) do
+    {:noreply, assign(socket, regen: nil)}
+  end
+
+  def handle_event("queue_regen", params, socket) do
+    prompt = String.trim(params["prompt"] || "")
+    research = String.trim(params["research"] || "")
+    voice = String.trim(params["voice"] || "")
+
+    if prompt == "" or socket.assigns.regen == nil do
+      {:noreply, socket}
+    else
+      payload =
+        socket.assigns.regen
+        |> Map.merge(%{
+          "type" => "create",
+          "deck_id" => socket.assigns.deck_id,
+          "prompt" => prompt
+        })
+        # An emptied voice field keeps the original — the tweak is retyping it.
+        |> then(fn payload ->
+          if voice == "", do: payload, else: Map.put(payload, "voice", voice)
+        end)
+        |> then(fn payload ->
+          if research == "",
+            do: Map.drop(payload, ~w(research research_filename)),
+            else: Map.put(payload, "research", research)
+        end)
+
+      Decks.queue_request(payload)
+
+      Phoenix.PubSub.broadcast_from(
+        Uitstalling.PubSub,
+        self(),
+        socket.assigns.topic,
+        :queue_updated
+      )
+
+      Decks.DeckWorker.kick(socket.assigns.deck_id)
+
+      # The replacement lands via :deck_updated; keep what's on screen now
+      # one ↶ away.
+      undo = Enum.take([socket.assigns.raw | socket.assigns.undo], @undo_depth)
+
+      {:noreply,
+       socket
+       |> assign(regen: nil, undo: undo)
+       |> refresh_pending()}
     end
   end
 

@@ -303,8 +303,18 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
     assert raw["voice"] == "friendly, non-technical"
     assert Enum.all?(raw["slides"], &is_binary(&1["id"]))
 
-    [request] = Decks.load_requests()
-    assert request["status"] == "done"
+    # The model's title-slide image_request never reaches the stored deck —
+    # it becomes a queued asset request the same worker drains next.
+    refute Map.has_key?(hd(raw["slides"]), "image_request")
+    assert_receive :deck_updated, 2_000
+
+    raw = Decks.load_raw!(deck_id)
+    assert %{"asset_id" => "ast_" <> _} = hd(raw["slides"])["image"]
+
+    requests = Decks.load_requests()
+    assert Enum.map(requests, & &1["type"]) == ["create", "asset"]
+    assert Enum.all?(requests, &(&1["status"] == "done"))
+    assert Enum.find(requests, &(&1["type"] == "asset"))["slide_id"] == "s0"
   end
 
   test "a failed create leaves the stub deck intact", %{user: user} do
@@ -349,19 +359,24 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
     assert request["status"] == "done"
 
     slide = Enum.at(Decks.load_raw!("demo")["slides"], 1)
-    assert %{"asset_id" => "ast_" <> _, "alt" => "an isometric phishing proxy"} = slide["image"]
+    assert %{"asset_id" => "ast_" <> _} = slide["image"]
+    # No visible caption by default — the subject lives on the asset only,
+    # where the editor's regenerate flow offers it back.
+    refute Map.has_key?(slide["image"], "alt")
 
     asset = Assets.get(slide["image"]["asset_id"])
     assert asset.origin == "gen"
-    # The stored prompt is the composed one: subject + deck/slide art direction
-    assert asset.prompt =~ "an isometric phishing proxy"
-    assert asset.prompt =~ "amber"
-    assert asset.prompt =~ "Passwordless / WebAuthn"
-    assert asset.prompt =~ "§ 0 · FRAMING"
+    assert asset.prompt == "an isometric phishing proxy"
     assert Assets.ready?(asset.id)
 
+    # The GENERATOR got the composed prompt (subject + deck/slide art
+    # direction) — the fake echoes its prompt into the stored bytes.
     assert {:file, path, "image/png"} = Assets.serve(asset)
-    assert File.read!(path) =~ "an isometric phishing proxy"
+    generated_from = File.read!(path)
+    assert generated_from =~ "an isometric phishing proxy"
+    assert generated_from =~ "amber"
+    assert generated_from =~ "Passwordless / WebAuthn"
+    assert generated_from =~ "§ 0 · FRAMING"
   end
 
   test "a failed generation marks the request failed and leaves the slide untouched" do
