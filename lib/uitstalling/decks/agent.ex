@@ -16,8 +16,17 @@ defmodule Uitstalling.Decks.Agent do
 
   @type retry :: nil | %{errors: [String.t()], previous: map() | nil}
 
-  @doc "Replacement for one slide of an existing deck."
+  @doc "Replacement for one slide of an existing deck (whole-slide rework)."
   @callback generate_slide(deck :: map(), request :: map(), retry()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  Edit operations for a scoped change to one slide (see docs/edit-ops.md).
+  `request["target"]` names the field/part the ops may touch. Returns the
+  raw decoded reply — expected shape `{"ops": [...]}` — which the caller
+  parses through `Uitstalling.Decks.Op` and enforces scope on.
+  """
+  @callback generate_ops(deck :: map(), request :: map(), retry()) ::
               {:ok, map()} | {:error, term()}
 
   @doc "A whole new deck from a topic prompt + theme/voice/length choices."

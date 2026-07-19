@@ -51,21 +51,81 @@ defmodule Uitstalling.Decks.Agent.Fake do
           {:ok, Map.put(slide, "image_request", %{"subject" => "a diagram of the login flow"})}
         end
 
-      String.starts_with?(prompt, "SCOPE_THEN_OK:") ->
-        with {:ok, slide} <- edit_slide(deck, request) do
-          case retry do
-            nil ->
-              {:ok, Map.put(slide, "kicker", "COLLATERAL DAMAGE")}
-
-            %{errors: [error | _]} ->
-              true = error =~ "outside"
-              {:ok, slide}
-          end
-        end
-
       true ->
         edit_slide(deck, request)
     end
+  end
+
+  @impl true
+  def generate_ops(deck, request, retry) do
+    prompt = request["prompt"]
+
+    cond do
+      String.starts_with?(prompt, "FAIL:") ->
+        # A forbidden field, every attempt — exhausts the retries
+        {:ok, %{"ops" => [%{"op" => "set_field", "field" => "layout", "value" => "hero"}]}}
+
+      String.starts_with?(prompt, "OPS_GARBAGE_THEN_OK:") ->
+        case retry do
+          nil ->
+            {:ok, %{"ops" => [%{"op" => "warp_reality"}]}}
+
+          %{errors: [error | _]} ->
+            true = error =~ "unknown op"
+            good_ops(deck, request)
+        end
+
+      String.starts_with?(prompt, "OPS_OUT_OF_SCOPE_THEN_OK:") ->
+        case retry do
+          nil ->
+            {:ok, %{"ops" => [%{"op" => "set_field", "field" => "kicker", "value" => "SNEAKY"}]}}
+
+          %{errors: [error | _]} ->
+            true = error =~ "out of scope"
+            good_ops(deck, request)
+        end
+
+      true ->
+        good_ops(deck, request)
+    end
+  end
+
+  defp good_ops(deck, request) do
+    op =
+      case request["target"] do
+        %{"kind" => "field", "field" => field} ->
+          %{"op" => "set_field", "field" => field, "value" => "AGENT: #{request["prompt"]}"}
+
+        %{"kind" => "part_field", "part" => part, "field" => field} ->
+          %{
+            "op" => "set_field",
+            "part" => part,
+            "field" => field,
+            "value" => "AGENT: #{request["prompt"]}"
+          }
+
+        %{"kind" => "part", "part" => part} ->
+          %{
+            "op" => "set_field",
+            "part" => part,
+            "field" => part_text_field(deck, request["slide_id"], part),
+            "value" => "AGENT: #{request["prompt"]}"
+          }
+      end
+
+    {:ok, %{"ops" => [op]}}
+  end
+
+  defp part_text_field(deck, slide_id, part_id) do
+    slide = Enum.find(deck["slides"], &(&1["id"] == slide_id)) || %{}
+
+    part =
+      case Uitstalling.Decks.Op.part_location(slide, part_id) do
+        {key, index} -> Enum.at(slide[key], index)
+        nil -> %{}
+      end
+
+    Enum.find(~w(body a label actor q), "body", &Map.has_key?(part, &1))
   end
 
   @impl true

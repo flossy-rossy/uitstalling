@@ -192,6 +192,58 @@ defmodule Uitstalling.DecksTest do
     assert Decks.delete_block(raw, 0, "steps.99.body") == raw
   end
 
+  test "migrate backfills unique part ids on points/steps/items" do
+    raw = %{
+      "title" => "T",
+      "slides" => [
+        %{
+          "layout" => "flow",
+          "steps" => [
+            %{"actor" => "A", "body" => "one"},
+            %{"id" => "p5", "actor" => "B", "body" => "two"},
+            %{"id" => "p5", "actor" => "C", "body" => "dup"}
+          ]
+        }
+      ]
+    }
+
+    migrated = Decks.migrate(raw)
+    ids = migrated["slides"] |> hd() |> Map.fetch!("steps") |> Enum.map(& &1["id"])
+
+    assert Enum.all?(ids, &(is_binary(&1) and &1 != ""))
+    assert ids == Enum.uniq(ids)
+    # The first holder of an explicit id keeps it
+    assert Enum.at(ids, 1) == "p5"
+    assert Decks.migrate(migrated) == migrated
+  end
+
+  test "rejects duplicate or junk part ids" do
+    dup =
+      minimal(%{
+        "layout" => "points",
+        "heading" => "h",
+        "points" => [
+          %{"id" => "p0", "label" => "A", "body" => "a"},
+          %{"id" => "p0", "label" => "B", "body" => "b"}
+        ]
+      })
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:error, [error]} = Decks.parse(dup)
+    assert error =~ "duplicate part ids"
+
+    junk =
+      minimal(%{
+        "layout" => "points",
+        "heading" => "h",
+        "points" => [%{"id" => 7, "label" => "A", "body" => "a"}]
+      })
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:error, [error]} = Decks.parse(junk)
+    assert error =~ "part ids must be non-empty strings"
+  end
+
   test "migrate stamps the version and backfills unique slide ids" do
     raw = %{
       "title" => "T",

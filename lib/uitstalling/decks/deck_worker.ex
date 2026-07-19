@@ -34,6 +34,8 @@ defmodule Uitstalling.Decks.DeckWorker do
   alias Uitstalling.Assets
   alias Uitstalling.Decks
   alias Uitstalling.Decks.BlockPath
+  alias Uitstalling.Decks.Op
+  alias Uitstalling.Decks.Op.{DeleteField, ReplacePart, SetField}
 
   @max_attempts 3
 
@@ -113,9 +115,18 @@ defmodule Uitstalling.Decks.DeckWorker do
     result =
       try do
         case request["type"] do
-          "create" -> attempt_create(request, nil, 1)
-          "asset" -> generate_and_attach(request)
-          _ -> attempt_edit(request, nil, 1)
+          "create" ->
+            attempt_create(request, nil, 1)
+
+          "asset" ->
+            generate_and_attach(request)
+
+          _ ->
+            # Scoped edits go through the op vocabulary (docs/edit-ops.md);
+            # whole-slide rework keeps the replacement path.
+            if request["block"],
+              do: attempt_ops(request, nil, 1),
+              else: attempt_edit(request, nil, 1)
         end
       rescue
         exception ->
@@ -183,8 +194,7 @@ defmodule Uitstalling.Decks.DeckWorker do
 
         new_raw = put_in(raw, ["slides", Access.at(index)], slide)
 
-        with :ok <- check_block_scope(original, slide, request["block"]),
-             :ok <- edit_validation(new_raw, index),
+        with :ok <- edit_validation(new_raw, index),
              :ok <- not_canceled(request) do
           Decks.save!(request["deck_id"], new_raw)
           queue_image_request(request, image_request)
@@ -257,32 +267,140 @@ defmodule Uitstalling.Decks.DeckWorker do
     |> String.replace_prefix("slides[#{index}]:", "slide:")
   end
 
-  # A block-scoped edit may only change the part it was asked to change; every
-  # other field must come back byte-for-byte. Divergence is repairable, so it
-  # goes through the retry loop rather than persisting silently.
-  defp check_block_scope(_original, _slide, nil), do: :ok
+  # ----- Scoped edits: the op path (docs/edit-ops.md) ----------------------------
 
-  defp check_block_scope(%{} = original, %{} = slide, block) do
-    case BlockPath.parse(block) do
-      {:ok, parsed} ->
-        root = BlockPath.root(parsed)
+  defp attempt_ops(request, retry, attempt) do
+    raw = Decks.load_raw!(request["deck_id"])
 
-        if Map.drop(original, [root]) == Map.drop(slide, [root]) do
-          :ok
-        else
-          {:retry,
-           [
-             "response: fields outside \"#{block}\" were changed — redo the edit " <>
-               "changing ONLY that part and returning every other field unchanged"
-           ]}
+    case slide_index(raw, request) do
+      nil ->
+        {:error, :slide_not_found}
+
+      index ->
+        slide = Enum.at(raw["slides"], index)
+
+        case resolve_scope(slide, request["block"]) do
+          nil ->
+            {:error, :block_not_found}
+
+          target ->
+            request = Map.put(request, "target", target)
+
+            case Decks.Agent.impl().generate_ops(raw, request, retry) do
+              {:ok, reply} ->
+                apply_ops(raw, reply, request, index, target, attempt)
+
+              {:error, reason} ->
+                case repair_errors(reason) do
+                  nil -> {:error, reason}
+                  errors -> retry_ops(request, errors, nil, attempt)
+                end
+            end
         end
-
-      :error ->
-        :ok
     end
   end
 
-  defp check_block_scope(_original, _slide, _block), do: :ok
+  defp apply_ops(raw, reply, request, index, target, attempt) do
+    with {:ok, ops} <- Op.parse_batch(reply["ops"], request["slide_id"]),
+         :ok <- check_ops_scope(ops, target),
+         {:ok, new_raw, _applied} <- Op.apply_batch(raw, ops),
+         :ok <- edit_validation(new_raw, index),
+         :ok <- not_canceled(request) do
+      Decks.save!(request["deck_id"], new_raw)
+      :ok
+    else
+      {:retry, errors} -> retry_ops(request, errors, reply, attempt)
+      {:error, errors} when is_list(errors) -> retry_ops(request, errors, reply, attempt)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retry_ops(_request, errors, _previous, attempt) when attempt >= @max_attempts do
+    {:error, {:validation_failed, errors}}
+  end
+
+  defp retry_ops(request, errors, previous, attempt) do
+    attempt_ops(request, %{errors: errors, previous: previous}, attempt + 1)
+  end
+
+  # What the UI's block path means in op terms, resolved against the current
+  # slide: a slide-level field, an id-addressed part, or one field of a part.
+  # Index paths into non-part lists (bullets columns, table rows) scope to
+  # the whole field — those lists have no part ids (yet).
+  defp resolve_scope(slide, block) do
+    case BlockPath.parse(block) do
+      {:ok, {:key, key}} ->
+        %{"kind" => "field", "field" => key}
+
+      {:ok, {:item, key, index}} ->
+        case part_id_at(slide, key, index) do
+          nil -> %{"kind" => "field", "field" => key}
+          id -> %{"kind" => "part", "part" => id}
+        end
+
+      {:ok, {:field, key, index, sub}} ->
+        case part_id_at(slide, key, index) do
+          nil -> %{"kind" => "field", "field" => key}
+          id -> %{"kind" => "part_field", "part" => id, "field" => sub}
+        end
+
+      :error ->
+        nil
+    end
+  end
+
+  defp part_id_at(slide, key, index) do
+    case Enum.at(List.wrap(slide[key]), index) do
+      %{"id" => id} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  # Scope enforcement by construction: every op in the batch must target the
+  # requested field/part — anything else is a repairable violation.
+  defp check_ops_scope(ops, target) do
+    if Enum.all?(ops, &in_scope?(&1, target)) do
+      :ok
+    else
+      {:retry,
+       [
+         "ops: out of scope — every op must change only the requested target " <>
+           "(#{inspect(target)})"
+       ]}
+    end
+  end
+
+  defp in_scope?(%SetField{part: nil, field: field}, %{"kind" => "field", "field" => field}),
+    do: true
+
+  defp in_scope?(%DeleteField{part: nil, field: field}, %{"kind" => "field", "field" => field}),
+    do: true
+
+  defp in_scope?(%SetField{part: part}, %{"kind" => "part", "part" => part})
+       when is_binary(part),
+       do: true
+
+  defp in_scope?(%DeleteField{part: part}, %{"kind" => "part", "part" => part})
+       when is_binary(part),
+       do: true
+
+  defp in_scope?(%ReplacePart{part: part}, %{"kind" => "part", "part" => part}), do: true
+
+  defp in_scope?(%SetField{part: part, field: field}, %{
+         "kind" => "part_field",
+         "part" => part,
+         "field" => field
+       }),
+       do: true
+
+  defp in_scope?(%DeleteField{part: part, field: field}, %{
+         "kind" => "part_field",
+         "part" => part,
+         "field" => field
+       }),
+       do: true
+
+  defp in_scope?(_op, _target), do: false
 
   @app_keys ~w(image)
 

@@ -118,7 +118,13 @@ defmodule UitstallingWeb.DeckLiveTest do
     |> render_submit(%{"q" => "Which browsers work?", "a" => "All of them since 2018."})
 
     item = Enum.at(deck_on_disk()["slides"], 9)["items"] |> Enum.at(1)
-    assert item == %{"q" => "Which browsers work?", "a" => "All of them since 2018."}
+    # The app-assigned part id survives a manual edit untouched
+    assert %{"id" => "p" <> _} = item
+
+    assert Map.delete(item, "id") == %{
+             "q" => "Which browsers work?",
+             "a" => "All of them since 2018."
+           }
   end
 
   test "saving a bullets column edits one line per bullet", %{conn: conn} do

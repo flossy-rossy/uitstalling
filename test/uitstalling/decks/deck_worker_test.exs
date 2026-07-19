@@ -137,8 +137,12 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
     assert Enum.at(raw["slides"], 1)["heading"] == "AGENT: WRONG_ID: touch this"
   end
 
-  test "a block-scoped edit that touches other fields is retried until it behaves" do
-    queue_edit("SCOPE_THEN_OK: punch up the heading", %{"block" => "heading"})
+  # ----- Scoped edits (the op path) --------------------------------------------
+
+  test "a field-scoped edit lands as ops, touching nothing else" do
+    before = Enum.at(Decks.load_raw!("demo")["slides"], 1)
+
+    queue_edit("tighten this up", %{"block" => "heading"})
 
     start_supervised!({DeckWorker, "demo"})
     assert_receive :deck_updated, 2_000
@@ -147,8 +151,73 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
     assert request["status"] == "done"
 
     slide = Enum.at(Decks.load_raw!("demo")["slides"], 1)
-    assert slide["heading"] == "AGENT: SCOPE_THEN_OK: punch up the heading"
-    refute slide["kicker"] == "COLLATERAL DAMAGE"
+    assert slide["heading"] == "AGENT: tighten this up"
+    assert Map.delete(slide, "heading") == Map.delete(before, "heading")
+  end
+
+  test "a part-scoped edit targets the part by its stable id" do
+    # Demo slide s3 is the flow slide; migrate backfilled part ids
+    steps_before = Enum.at(Decks.load_raw!("demo")["slides"], 3)["steps"]
+    assert Enum.all?(steps_before, &is_binary(&1["id"]))
+
+    queue_edit("reword this step", %{
+      "slide_id" => "s3",
+      "slide_index" => 3,
+      "layout" => "flow",
+      "block" => "steps.1"
+    })
+
+    start_supervised!({DeckWorker, "demo"})
+    assert_receive :deck_updated, 2_000
+
+    steps = Enum.at(Decks.load_raw!("demo")["slides"], 3)["steps"]
+    assert Enum.at(steps, 1)["body"] == "AGENT: reword this step"
+    # Identity and neighbours intact
+    assert Enum.map(steps, & &1["id"]) == Enum.map(steps_before, & &1["id"])
+    assert Enum.at(steps, 0) == Enum.at(steps_before, 0)
+    assert Enum.at(steps, 2) == Enum.at(steps_before, 2)
+  end
+
+  test "garbage ops are repaired through the retry loop" do
+    queue_edit("OPS_GARBAGE_THEN_OK: fix the heading", %{"block" => "heading"})
+
+    start_supervised!({DeckWorker, "demo"})
+    assert_receive :deck_updated, 2_000
+
+    [request] = Decks.load_requests()
+    assert request["status"] == "done"
+
+    assert Enum.at(Decks.load_raw!("demo")["slides"], 1)["heading"] ==
+             "AGENT: OPS_GARBAGE_THEN_OK: fix the heading"
+  end
+
+  test "out-of-scope ops are rejected and the model is retried" do
+    queue_edit("OPS_OUT_OF_SCOPE_THEN_OK: fix the heading", %{"block" => "heading"})
+
+    start_supervised!({DeckWorker, "demo"})
+    assert_receive :deck_updated, 2_000
+
+    [request] = Decks.load_requests()
+    assert request["status"] == "done"
+
+    slide = Enum.at(Decks.load_raw!("demo")["slides"], 1)
+    assert slide["heading"] == "AGENT: OPS_OUT_OF_SCOPE_THEN_OK: fix the heading"
+    refute slide["kicker"] == "SNEAKY"
+  end
+
+  test "an ops edit that can never parse exhausts its retries and fails" do
+    queue_edit("FAIL: forbidden field forever", %{"block" => "heading"})
+
+    start_supervised!({DeckWorker, "demo"})
+    assert_receive :queue_updated, 2_000
+
+    [request] = Decks.load_requests()
+    assert request["status"] == "failed"
+    assert request["error"] =~ "validation_failed"
+
+    # Deck untouched
+    assert Enum.at(Decks.load_raw!("demo")["slides"], 1)["heading"] ==
+             "Ask the ==right question.=="
   end
 
   test "the slide's image survives an agent edit even when the model vandalizes it" do

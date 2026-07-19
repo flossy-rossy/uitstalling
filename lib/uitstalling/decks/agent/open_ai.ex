@@ -30,6 +30,17 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
   end
 
   @impl true
+  def generate_ops(deck, request, retry) do
+    system = Claude.ops_system_prompt() <> "\n" <> Claude.edit_context_prompt(deck)
+
+    with {:ok, api_key} <- Claude.fetch_api_key(),
+         {:ok, text} <-
+           call_api(api_key, system, Claude.ops_user_prompt(request, retry), max_tokens: 2048) do
+      Claude.extract_json(text)
+    end
+  end
+
+  @impl true
   def generate_deck(request, retry) do
     # Whole-deck generation is the hard task: turn on reasoning (OpenRouter
     # normalizes this across models, ignores it where unsupported) and give

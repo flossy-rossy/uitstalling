@@ -14,7 +14,7 @@ defmodule Uitstalling.Decks do
   designed to be fed straight back to the model as a retry prompt.
   """
 
-  alias Uitstalling.Decks.{BlockPath, Deck, Slide}
+  alias Uitstalling.Decks.{BlockPath, Deck, Op, Slide}
 
   # Current document version, stamped by migrate/1. Bump when a stored deck
   # needs upgrading before it can pass the current validator.
@@ -161,6 +161,9 @@ defmodule Uitstalling.Decks do
     - "rows" (table): list of rows; each row has exactly as many cells as "columns";
       a cell is a string or {"text", "tint"}.
     - "items" (faq): list of {"q", "a"}.
+    Items in "points"/"steps"/"items" carry an app-assigned "id" — when
+    returning a whole slide, preserve each item's "id" exactly; never invent
+    ids for new items (omit "id" and the app assigns one).
 
     IMAGES: You cannot generate or find images, and you must NEVER invent an
     image file path or URL. For a media slide, set "kind" and put a short
@@ -233,49 +236,70 @@ defmodule Uitstalling.Decks do
   Upgrade a stored raw deck map to the current document version. Pure and
   idempotent; applied on every load and before every save, so documents
   written under older rules converge instead of failing a tightened validator.
-  Current migrations: stamp "v", backfill missing/duplicate slide ids.
+  Current migrations: stamp "v", backfill missing/duplicate slide ids ("sN")
+  and part ids ("pN") on the id-addressable part lists.
   """
   def migrate(%{} = raw) do
     raw
     |> Map.put("v", @doc_version)
-    |> Map.update("slides", [], &backfill_ids/1)
+    |> Map.update("slides", [], fn
+      slides when is_list(slides) ->
+        slides |> ensure_ids("s") |> Enum.map(&backfill_part_ids/1)
+
+      other ->
+        other
+    end)
   end
 
-  # Give every slide a unique string id, preserving existing unique ones.
-  # Positional "sN" fallbacks skip past taken ids so a mint never collides.
-  defp backfill_ids(slides) when is_list(slides) do
-    taken =
-      for %{} = s <- slides, is_binary(s["id"]) and s["id"] != "", into: MapSet.new(), do: s["id"]
+  # Each layout has at most one part list, so per-list uniqueness is
+  # per-slide uniqueness.
+  defp backfill_part_ids(%{} = slide) do
+    Enum.reduce(Op.part_lists(), slide, fn key, acc ->
+      case acc[key] do
+        list when is_list(list) -> Map.put(acc, key, ensure_ids(list, "p"))
+        _ -> acc
+      end
+    end)
+  end
 
-    {slides, _seen} =
-      slides
+  defp backfill_part_ids(other), do: other
+
+  # Give every map item a unique string id, preserving existing unique ones.
+  # Positional fallbacks skip past taken ids so a mint never collides.
+  defp ensure_ids(items, prefix) when is_list(items) do
+    taken =
+      for %{} = item <- items,
+          is_binary(item["id"]) and item["id"] != "",
+          into: MapSet.new(),
+          do: item["id"]
+
+    {items, _seen} =
+      items
       |> Enum.with_index()
-      |> Enum.map_reduce(MapSet.new(), fn {slide, i}, seen ->
-        case slide do
+      |> Enum.map_reduce(MapSet.new(), fn {item, i}, seen ->
+        case item do
           %{"id" => id} when is_binary(id) and id != "" ->
             if MapSet.member?(seen, id),
               do:
-                {Map.put(slide, "id", mint_id(i, MapSet.union(taken, seen))),
+                {Map.put(item, "id", mint_id(prefix, i, MapSet.union(taken, seen))),
                  MapSet.put(seen, id)},
-              else: {slide, MapSet.put(seen, id)}
+              else: {item, MapSet.put(seen, id)}
 
           %{} ->
-            id = mint_id(i, MapSet.union(taken, seen))
-            {Map.put(slide, "id", id), MapSet.put(seen, id)}
+            id = mint_id(prefix, i, MapSet.union(taken, seen))
+            {Map.put(item, "id", id), MapSet.put(seen, id)}
 
           other ->
             {other, seen}
         end
       end)
 
-    slides
+    items
   end
 
-  defp backfill_ids(other), do: other
-
-  defp mint_id(i, taken) do
-    id = "s#{i}"
-    if MapSet.member?(taken, id), do: mint_id(i + 1, taken), else: id
+  defp mint_id(prefix, i, taken) do
+    id = "#{prefix}#{i}"
+    if MapSet.member?(taken, id), do: mint_id(prefix, i + 1, taken), else: id
   end
 
   @doc "Create a new deck owned by `user_id`. Refuses invalid decks."
@@ -615,6 +639,31 @@ defmodule Uitstalling.Decks do
       end
   end
 
+  # Part ids address ops — like slide ids, a duplicate (or non-string) id
+  # would let an op land on the wrong part.
+  defp part_id_errors(s, path) do
+    ids =
+      for key <- Op.part_lists(),
+          list = s[key],
+          is_list(list),
+          %{} = item <- list,
+          Map.has_key?(item, "id"),
+          do: item["id"]
+
+    {strings, junk} = Enum.split_with(ids, &(is_binary(&1) and &1 != ""))
+
+    junk_errors =
+      if junk == [], do: [], else: ["#{path}: part ids must be non-empty strings"]
+
+    dup_errors =
+      case Enum.uniq(strings -- Enum.uniq(strings)) do
+        [] -> []
+        dups -> ["#{path}: duplicate part ids #{inspect(dups)} — every part id must be unique"]
+      end
+
+    junk_errors ++ dup_errors
+  end
+
   # Slide ids address edits — a duplicate would let one edit land on the
   # wrong slide, so it is rejected like any other schema violation.
   defp duplicate_id_errors(slides) do
@@ -646,6 +695,7 @@ defmodule Uitstalling.Decks do
           opt_string(s, "footnote", path) ++
           opt_string(s, "notes", path) ++
           validate_image(s["image"], path) ++
+          part_id_errors(s, path) ++
           validate_fields(layout, s, path)
 
       other ->

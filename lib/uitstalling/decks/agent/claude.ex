@@ -31,6 +31,16 @@ defmodule Uitstalling.Decks.Agent.Claude do
   end
 
   @impl true
+  def generate_ops(deck, request, retry) do
+    system = [ops_system_prompt(), edit_context_prompt(deck)]
+
+    with {:ok, api_key} <- fetch_api_key(),
+         {:ok, text} <- call_api(api_key, system, ops_user_prompt(request, retry), 2048) do
+      extract_json(text)
+    end
+  end
+
+  @impl true
   def generate_deck(request, retry) do
     with {:ok, api_key} <- fetch_api_key(),
          {:ok, text} <-
@@ -139,23 +149,80 @@ defmodule Uitstalling.Decks.Agent.Claude do
 
   @doc false
   def edit_user_prompt(request, retry) do
-    scope =
-      if request["block"],
-        do:
-          "Change ONLY the \"#{request["block"]}\" part of the slide. " <>
-            "Return every other field byte-for-byte unchanged.",
-        else: "The request applies to the whole slide."
-
     """
     Edit request for the slide with id=#{request["slide_id"]} (layout=#{request["layout"]}):
     "#{request["prompt"]}"
 
-    #{scope}
+    The request applies to the whole slide.
 
     Return the complete replacement JSON object for this one slide.
     #{retry_block(retry)}
     """
   end
+
+  # ----- Ops prompts (scoped edits emit operations, never slides) ----------------
+
+  @doc false
+  def ops_system_prompt do
+    """
+    You are a slide-deck edit agent for a presentation builder. You receive a
+    deck (JSON), and one edit request scoped to a single named part of one
+    slide. You respond with the OPERATIONS that perform the change — never
+    with the slide itself.
+
+    Respond with ONLY this JSON object. No prose, no markdown fences:
+    {"ops": [ ... ]}
+
+    Operations (parts are addressed by their app-assigned "id"):
+    - {"op": "set_field", "field": "<name>", "value": <value>}
+      sets a field on the slide itself
+    - {"op": "set_field", "part": "<part id>", "field": "<name>", "value": <value>}
+      sets a field on one list part
+    - {"op": "delete_field", "field": "<name>"} / with "part" — removes a field
+    - {"op": "replace_part", "part": "<part id>", "value": {<full replacement part>}}
+    - {"op": "insert_part", "list": "points|steps|items", "after": "<part id>"|"start"|"end", "part": {<the new part>}}
+    - {"op": "remove_part", "part": "<part id>"}
+    - {"op": "move_part", "part": "<part id>", "after": "<part id>"|"start"|"end"}
+
+    Rules:
+    - Emit ONLY ops that change the requested target — nothing else on the
+      slide may be touched, and a validator rejects out-of-scope ops.
+    - Prefer the smallest ops that do the job (set one field over replacing
+      a whole part).
+    - Never set "id", "layout", or "image" — they are app-managed.
+    - Values must stay within the design system below.
+    - Match the deck's writing voice.
+
+    #{Decks.schema_prompt()}
+    """
+  end
+
+  @doc false
+  def ops_user_prompt(request, retry) do
+    """
+    Edit request for the slide with id=#{request["slide_id"]} (layout=#{request["layout"]}):
+    "#{request["prompt"]}"
+
+    #{target_description(request["target"])}
+
+    Return {"ops": [...]} performing exactly this change.
+    #{retry_block(retry)}
+    """
+  end
+
+  defp target_description(%{"kind" => "field", "field" => field}) do
+    "Your ops may change ONLY the \"#{field}\" field of the slide itself (no \"part\" key)."
+  end
+
+  defp target_description(%{"kind" => "part", "part" => part}) do
+    "Your ops may change ONLY the part with id \"#{part}\" (set/delete its fields, or replace_part it)."
+  end
+
+  defp target_description(%{"kind" => "part_field", "part" => part, "field" => field}) do
+    "Your ops may change ONLY the \"#{field}\" field of the part with id \"#{part}\"."
+  end
+
+  defp target_description(_target), do: "Change only what the request asks for."
 
   @doc false
   def create_system_prompt do
