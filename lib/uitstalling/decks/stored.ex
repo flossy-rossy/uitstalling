@@ -7,6 +7,7 @@ defmodule Uitstalling.Decks.Stored do
   @foreign_key_type :binary_id
   schema "decks" do
     field :data, :map
+    field :slug, :string
     field :expires_at, :utc_datetime
 
     belongs_to :user, Uitstalling.Accounts.User

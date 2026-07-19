@@ -11,6 +11,10 @@ defmodule UitstallingWeb.Endpoint do
     same_site: "Lax"
   ]
 
+  # Before everything, including the socket and static files — www must
+  # never serve content, only redirect to the canonical host.
+  plug UitstallingWeb.Plugs.CanonicalHost
+
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]

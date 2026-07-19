@@ -76,4 +76,17 @@ defmodule UitstallingWeb.Router do
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
+
+  # Public slug routes — LAST on purpose: /:user_slug is a catch-all, so
+  # every named route above (incl. /dev) must get first pick. Slug
+  # generation also refuses the reserved segments (Uitstalling.Slug).
+  scope "/", UitstallingWeb do
+    pipe_through :browser
+
+    live_session :public, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
+      live "/:user_slug", UserLive, :show
+      live "/:user_slug/:deck_slug", DeckLive, :show
+      live "/:user_slug/:deck_slug/remote", DeckRemoteLive, :show
+    end
+  end
 end

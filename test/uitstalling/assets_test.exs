@@ -61,4 +61,27 @@ defmodule Uitstalling.AssetsTest do
   test "generator failures pass through untouched", %{user: user} do
     assert {:error, :fake_generation_failed} = Assets.create_generated(user.id, "FAIL: nope")
   end
+
+  test "a failing object store surfaces an error instead of crashing the caller",
+       %{user: user, tmp: tmp} do
+    previous = Application.get_env(:uitstalling, :asset_storage)
+
+    Application.put_env(:uitstalling, :asset_storage,
+      adapter: :s3,
+      bucket: "test-bucket",
+      endpoint: "https://storage.test",
+      region: "auto",
+      access_key_id: "k",
+      secret_access_key: "s"
+    )
+
+    on_exit(fn -> Application.put_env(:uitstalling, :asset_storage, previous) end)
+
+    Req.Test.stub(Uitstalling.ProviderStub, fn conn ->
+      conn |> Plug.Conn.put_status(403) |> Req.Test.json(%{"error" => "AccessDenied"})
+    end)
+
+    File.write!(tmp, @png)
+    assert {:error, {:storage_failed, 403}} = Assets.create_upload(user.id, tmp)
+  end
 end

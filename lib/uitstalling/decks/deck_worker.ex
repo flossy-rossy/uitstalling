@@ -427,6 +427,9 @@ defmodule Uitstalling.Decks.DeckWorker do
         case {Decks.parse(raw), not_canceled(request)} do
           {{:ok, _deck}, :ok} ->
             Decks.save!(request["deck_id"], raw)
+            # The REAL title exists now — mint the public slug from it
+            # (never from the "New presentation" stub).
+            Decks.ensure_deck_slug(request["deck_id"])
             :ok
 
           {_, {:error, :canceled}} ->

@@ -337,6 +337,52 @@ defmodule Uitstalling.Decks do
     Base.encode16(:crypto.strong_rand_bytes(5), case: :lower)
   end
 
+  # ----- Public slugs -----------------------------------------------------------
+  #
+  # /:user_slug/:deck_slug — the deck slug is minted from the title once the
+  # REAL title exists (after generation, not from the "New presentation"
+  # stub) and then never changes: it's in people's shared links. The raw
+  # deck id is always accepted where a slug is, so pre-slug links survive.
+
+  @doc "Set the deck's slug from its current title, if it doesn't have one yet."
+  def ensure_deck_slug(deck_id) do
+    case Repo.get(Stored, deck_id) do
+      %Stored{slug: nil, user_id: user_id} = stored ->
+        title = stored.data["title"] || "deck"
+
+        slug =
+          Uitstalling.Slug.unique(title, deck_id, fn candidate ->
+            Repo.exists?(from(d in Stored, where: d.user_id == ^user_id and d.slug == ^candidate))
+          end)
+
+        stored |> Ecto.Changeset.change(slug: slug) |> Repo.update!()
+        slug
+
+      %Stored{slug: slug} ->
+        slug
+
+      nil ->
+        nil
+    end
+  end
+
+  @doc "The deck id living at /:user_slug/:deck_slug — matches slug OR raw id."
+  def deck_id_for(user_id, slug_or_id) when is_binary(slug_or_id) do
+    Repo.one(
+      from(d in Stored,
+        where: d.user_id == ^user_id and (d.slug == ^slug_or_id or d.id == ^slug_or_id),
+        select: d.id
+      )
+    )
+  end
+
+  def deck_id_for(_user_id, _slug_or_id), do: nil
+
+  @doc "The deck's public slug (or its id while no slug is set yet)."
+  def deck_slug(deck_id) do
+    Repo.one(from(d in Stored, where: d.id == ^deck_id, select: d.slug)) || deck_id
+  end
+
   # ----- Mutations ------------------------------------------------------------
   #
   # Pure functions from raw map -> raw map. Callers re-run `parse/1` on the

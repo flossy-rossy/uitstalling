@@ -42,7 +42,23 @@ defmodule UitstallingWeb.DeckLive do
     "caption" => "A caption…"
   }
 
+  # Public slugged URL: /:user_slug/:deck_slug (deck_slug may be a raw id —
+  # pre-slug links stay alive forever).
+  def mount(%{"user_slug" => user_slug, "deck_slug" => deck_slug}, _session, socket) do
+    with %{} = owner <- Accounts.get_user_by_slug(user_slug),
+         deck_id when is_binary(deck_id) <- Decks.deck_id_for(owner.id, deck_slug) do
+      mount_deck(deck_id, socket, "/#{user_slug}/#{deck_slug}")
+    else
+      _ -> {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
+    end
+  end
+
+  # Legacy id URL — every link shared before slugs existed.
   def mount(%{"id" => deck_id}, _session, socket) do
+    mount_deck(deck_id, socket, "/deck/#{deck_id}")
+  end
+
+  defp mount_deck(deck_id, socket, base_path) do
     with true <- Decks.exists?(deck_id),
          raw = Decks.load_raw!(deck_id),
          # Lenient on purpose: a stored deck can stop validating without
@@ -57,6 +73,7 @@ defmodule UitstallingWeb.DeckLive do
       socket =
         assign(socket,
           deck_id: deck_id,
+          remote_path: base_path <> "/remote",
           topic: "deck:#{deck_id}",
           page_title: deck.title,
           raw: raw,
@@ -118,6 +135,13 @@ defmodule UitstallingWeb.DeckLive do
       />
 
       <div class="fixed bottom-4 right-6 flex items-center gap-3">
+        <.link
+          navigate={@remote_path}
+          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition flex items-center gap-1.5"
+          title="open the phone remote for this presentation"
+        >
+          <.icon name="hero-device-phone-mobile" class="w-3.5 h-3.5" /> remote
+        </.link>
         <span class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded">
           {@index + 1} / {length(@deck.slides)}
         </span>
@@ -268,213 +292,218 @@ defmodule UitstallingWeb.DeckLive do
     assigns = assign(assigns, :kind, assigns.selected.block && block_kind(assigns.selected.block))
 
     ~H"""
-    <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-6">
-      <div class="w-full max-w-xl bg-zinc-900 ring-1 ring-zinc-700 rounded-xl p-6 max-h-[90dvh] overflow-y-auto">
-        <p class="font-mono text-amber-400 text-xs tracking-wider mb-4">
+    <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6">
+      <div class="w-full max-w-xl bg-zinc-900 ring-1 ring-zinc-700 rounded-xl max-h-[90dvh] flex flex-col overflow-hidden">
+        <p class="font-mono text-amber-400 text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
           EDIT SLIDE {@selected.index + 1} · {@slide.layout}
           <span :if={@selected.block} class="text-zinc-400">· {@selected.block}</span>
         </p>
 
-        <%= if @selected.block do %>
-          <%!-- Image part: upload + alt + treatment, no model involved --%>
-          <form
-            :if={@kind == :image and @uploads}
-            id="image-form"
-            phx-submit="save_image"
-            phx-change="validate_image"
-          >
-            <div :if={@value} class="mb-4">
-              <img
-                src={"/a/#{@value["asset_id"]}"}
-                alt={@value["alt"] || ""}
-                class="max-h-40 rounded-lg ring-1 ring-zinc-700"
-              />
-            </div>
+        <div class="flex-1 min-h-0 overflow-y-auto px-6 pb-2">
+          <%= if @selected.block do %>
+            <%!-- Image part: upload + alt + treatment, no model involved --%>
+            <form
+              :if={@kind == :image and @uploads}
+              id="image-form"
+              phx-submit="save_image"
+              phx-change="validate_image"
+            >
+              <div :if={@value} class="mb-4">
+                <img
+                  src={"/a/#{@value["asset_id"]}"}
+                  alt={@value["alt"] || ""}
+                  class="max-h-40 rounded-lg ring-1 ring-zinc-700"
+                />
+              </div>
 
-            <p class="font-mono text-zinc-500 text-xs mb-2">
-              {if @value, do: "REPLACE THE IMAGE", else: "UPLOAD AN IMAGE"} · png / jpg / webp / gif · ≤ 5MB
-            </p>
-            <.live_file_input
-              upload={@uploads.image}
-              class="w-full text-sm text-zinc-400 file:mr-4 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700"
-            />
-            <p :for={err <- upload_errors(@uploads.image)} class="mt-1 text-red-400 text-xs font-mono">
-              {upload_error_msg(err)}
-            </p>
-            <div :for={entry <- @uploads.image.entries} class="mt-2">
-              <p class="font-mono text-xs text-zinc-400">{entry.client_name} — {entry.progress}%</p>
+              <p class="font-mono text-zinc-500 text-xs mb-2">
+                {if @value, do: "REPLACE THE IMAGE", else: "UPLOAD AN IMAGE"} · png / jpg / webp / gif · ≤ 5MB
+              </p>
+              <.live_file_input
+                upload={@uploads.image}
+                class="w-full text-sm text-zinc-400 file:mr-4 file:px-4 file:py-2 file:rounded-lg file:border-0 file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700"
+              />
               <p
-                :for={err <- upload_errors(@uploads.image, entry)}
-                class="text-red-400 text-xs font-mono"
+                :for={err <- upload_errors(@uploads.image)}
+                class="mt-1 text-red-400 text-xs font-mono"
               >
                 {upload_error_msg(err)}
               </p>
-            </div>
+              <div :for={entry <- @uploads.image.entries} class="mt-2">
+                <p class="font-mono text-xs text-zinc-400">{entry.client_name} — {entry.progress}%</p>
+                <p
+                  :for={err <- upload_errors(@uploads.image, entry)}
+                  class="text-red-400 text-xs font-mono"
+                >
+                  {upload_error_msg(err)}
+                </p>
+              </div>
 
-            <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">CAPTION / ALT TEXT (optional)</p>
-            <input
-              type="text"
-              name="alt"
-              value={@value && @value["alt"]}
-              class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
-            />
+              <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">CAPTION / ALT TEXT (optional)</p>
+              <input
+                type="text"
+                name="alt"
+                value={@value && @value["alt"]}
+                class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+              />
 
-            <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">SIZE</p>
-            <div class="flex gap-4">
-              <label
-                :for={{treatment, label} <- [{"side", "inset"}, {"full", "full width"}]}
-                class="flex items-center gap-2 font-mono text-sm text-zinc-300 cursor-pointer"
-              >
-                <input
-                  type="radio"
-                  name="treatment"
-                  value={treatment}
-                  checked={((@value && @value["treatment"]) || "side") == treatment}
-                  class="text-amber-500 bg-zinc-950 border-zinc-700 focus:ring-amber-500"
-                /> {label}
-              </label>
-            </div>
+              <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">SIZE</p>
+              <div class="flex gap-4">
+                <label
+                  :for={{treatment, label} <- [{"side", "inset"}, {"full", "full width"}]}
+                  class="flex items-center gap-2 font-mono text-sm text-zinc-300 cursor-pointer"
+                >
+                  <input
+                    type="radio"
+                    name="treatment"
+                    value={treatment}
+                    checked={((@value && @value["treatment"]) || "side") == treatment}
+                    class="text-amber-500 bg-zinc-950 border-zinc-700 focus:ring-amber-500"
+                  /> {label}
+                </label>
+              </div>
 
-            <div class="mt-4 flex justify-end">
-              <button
-                type="submit"
-                class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
-              >
-                Save image
-              </button>
-            </div>
-          </form>
-
-          <details :if={@kind == :image} class="mt-4">
-            <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
-              → OR DESCRIBE IT AND GENERATE
-            </summary>
-            <form id="image-gen-form" phx-submit="queue_image_gen" class="mt-2">
-              <textarea
-                name="prompt"
-                rows="3"
-                placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
-                class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-              ></textarea>
-              <div class="mt-3 flex justify-end">
+              <div class="sticky bottom-0 mt-4 py-2 bg-zinc-900 flex justify-end">
                 <button
                   type="submit"
                   class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
                 >
-                  Generate image
+                  Save image
                 </button>
               </div>
             </form>
-          </details>
 
-          <%!-- Block level: edit the text exactly --%>
-          <form :if={@kind not in [:agent_only, :image]} phx-submit="save_text">
-            <%= case @kind do %>
-              <% :scalar -> %>
+            <details :if={@kind == :image} class="mt-4">
+              <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
+                → OR DESCRIBE IT AND GENERATE
+              </summary>
+              <form id="image-gen-form" phx-submit="queue_image_gen" class="mt-2">
                 <textarea
-                  name="value"
-                  rows={if @selected.block in ~w(heading kicker), do: 2, else: 4}
-                  class={[
-                    "w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4",
-                    if(@selected.block == "code", do: "font-mono", else: "font-sans")
-                  ]}
-                >{@value}</textarea>
-              <% :lines -> %>
-                <p class="font-mono text-zinc-500 text-xs mb-2">ONE BULLET PER LINE</p>
-                <textarea
-                  name="value"
-                  rows="6"
+                  name="prompt"
+                  rows="3"
+                  placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
                   class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-                >{Enum.join(@value, "\n")}</textarea>
-              <% {:map, fields} -> %>
-                <div :for={field <- fields} class="mb-3">
-                  <p class="font-mono text-zinc-500 text-xs mb-1 uppercase">{field}</p>
-                  <textarea
-                    name={field}
-                    rows={if field in ~w(body a), do: 3, else: 1}
-                    class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
-                  >{@value[field]}</textarea>
+                ></textarea>
+                <div class="mt-3 flex justify-end">
+                  <button
+                    type="submit"
+                    class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                  >
+                    Generate image
+                  </button>
                 </div>
-            <% end %>
-            <p class="mt-2 font-mono text-zinc-600 text-xs">
-              markup: **strong** · ==accent== · ~~strike~~ · `code`
+              </form>
+            </details>
+
+            <%!-- Block level: edit the text exactly --%>
+            <form :if={@kind not in [:agent_only, :image]} phx-submit="save_text">
+              <%= case @kind do %>
+                <% :scalar -> %>
+                  <textarea
+                    name="value"
+                    rows={if @selected.block in ~w(heading kicker), do: 2, else: 4}
+                    class={[
+                      "w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4",
+                      if(@selected.block == "code", do: "font-mono", else: "font-sans")
+                    ]}
+                  >{@value}</textarea>
+                <% :lines -> %>
+                  <p class="font-mono text-zinc-500 text-xs mb-2">ONE BULLET PER LINE</p>
+                  <textarea
+                    name="value"
+                    rows="6"
+                    class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+                  >{Enum.join(@value, "\n")}</textarea>
+                <% {:map, fields} -> %>
+                  <div :for={field <- fields} class="mb-3">
+                    <p class="font-mono text-zinc-500 text-xs mb-1 uppercase">{field}</p>
+                    <textarea
+                      name={field}
+                      rows={if field in ~w(body a), do: 3, else: 1}
+                      class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+                    >{@value[field]}</textarea>
+                  </div>
+              <% end %>
+              <p class="mt-2 font-mono text-zinc-600 text-xs">
+                markup: **strong** · ==accent== · ~~strike~~ · `code`
+              </p>
+              <div class="sticky bottom-0 mt-3 py-2 bg-zinc-900 flex justify-end">
+                <button
+                  type="submit"
+                  class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+
+            <p :if={@kind == :agent_only} class="text-zinc-400 text-sm">
+              This part is best edited via the agent — describe the change below.
             </p>
-            <div class="mt-3 flex justify-end">
-              <button
-                type="submit"
-                class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
-              >
-                Save
-              </button>
+
+            <%!-- The agent never touches images (app-managed key) --%>
+            <details
+              :if={@kind != :image}
+              class={@kind != :agent_only && "mt-4"}
+              open={@kind == :agent_only}
+            >
+              <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
+                → OR ASK THE AGENT
+              </summary>
+              <.agent_form placeholder={"e.g. reword this #{@selected.block} more simply"} />
+            </details>
+          <% else %>
+            <%!-- Slide level: generation-oriented --%>
+            <p class="font-mono text-zinc-500 text-xs mb-2">DESCRIBE THE CHANGES</p>
+            <.agent_form placeholder="e.g. rework this slide around three punchy takeaways" />
+
+            <div :if={@addable != []} class="mt-6">
+              <p class="font-mono text-zinc-500 text-xs mb-2">ADD A PART</p>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  :for={{label, key} <- @addable}
+                  phx-click="add_block"
+                  phx-value-key={key}
+                  class="px-3 py-1.5 rounded-lg font-mono text-xs ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+                >
+                  + {label}
+                </button>
+              </div>
+              <p class="mt-2 font-mono text-zinc-600 text-xs">
+                adds a placeholder, then you write it — or ask the agent from its editor
+              </p>
             </div>
-          </form>
 
-          <p :if={@kind == :agent_only} class="text-zinc-400 text-sm">
-            This part is best edited via the agent — describe the change below.
-          </p>
+            <div class="mt-6">
+              <p class="font-mono text-zinc-500 text-xs mb-2">TEXT SIZE</p>
+              <div class="flex gap-2">
+                <button
+                  :for={size <- ~w(sm md lg)}
+                  phx-click="set_size"
+                  phx-value-size={size}
+                  class={[
+                    "px-4 py-2 rounded-lg font-mono text-sm ring-1 transition",
+                    if(@slide.size == size,
+                      do: "bg-amber-500 text-zinc-950 ring-amber-400 font-bold",
+                      else: "bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400"
+                    )
+                  ]}
+                >
+                  {String.upcase(size)}
+                </button>
+              </div>
+            </div>
+          <% end %>
 
-          <%!-- The agent never touches images (app-managed key) --%>
-          <details
-            :if={@kind != :image}
-            class={@kind != :agent_only && "mt-4"}
-            open={@kind == :agent_only}
+          <p
+            :if={@edit_error}
+            class="mt-4 p-3 bg-red-950 ring-1 ring-red-700 rounded text-red-200 text-sm font-mono"
           >
-            <summary class="font-mono text-zinc-500 text-xs cursor-pointer hover:text-amber-400">
-              → OR ASK THE AGENT
-            </summary>
-            <.agent_form placeholder={"e.g. reword this #{@selected.block} more simply"} />
-          </details>
-        <% else %>
-          <%!-- Slide level: generation-oriented --%>
-          <p class="font-mono text-zinc-500 text-xs mb-2">DESCRIBE THE CHANGES</p>
-          <.agent_form placeholder="e.g. rework this slide around three punchy takeaways" />
+            {@edit_error}
+          </p>
+        </div>
 
-          <div :if={@addable != []} class="mt-6">
-            <p class="font-mono text-zinc-500 text-xs mb-2">ADD A PART</p>
-            <div class="flex flex-wrap gap-2">
-              <button
-                :for={{label, key} <- @addable}
-                phx-click="add_block"
-                phx-value-key={key}
-                class="px-3 py-1.5 rounded-lg font-mono text-xs ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
-              >
-                + {label}
-              </button>
-            </div>
-            <p class="mt-2 font-mono text-zinc-600 text-xs">
-              adds a placeholder, then you write it — or ask the agent from its editor
-            </p>
-          </div>
-
-          <div class="mt-6">
-            <p class="font-mono text-zinc-500 text-xs mb-2">TEXT SIZE</p>
-            <div class="flex gap-2">
-              <button
-                :for={size <- ~w(sm md lg)}
-                phx-click="set_size"
-                phx-value-size={size}
-                class={[
-                  "px-4 py-2 rounded-lg font-mono text-sm ring-1 transition",
-                  if(@slide.size == size,
-                    do: "bg-amber-500 text-zinc-950 ring-amber-400 font-bold",
-                    else: "bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400"
-                  )
-                ]}
-              >
-                {String.upcase(size)}
-              </button>
-            </div>
-          </div>
-        <% end %>
-
-        <p
-          :if={@edit_error}
-          class="mt-4 p-3 bg-red-950 ring-1 ring-red-700 rounded text-red-200 text-sm font-mono"
-        >
-          {@edit_error}
-        </p>
-
-        <div class="mt-6 pt-4 border-t border-zinc-800 flex items-center justify-between">
+        <div class="shrink-0 px-6 py-4 border-t border-zinc-800 flex items-center justify-between">
           <div class="flex gap-3">
             <button
               :if={@selected.block}
@@ -889,6 +918,9 @@ defmodule UitstallingWeb.DeckLive do
 
   defp upload_failure(:unsupported_type),
     do: "That file isn't a supported image (png/jpg/webp/gif)"
+
+  defp upload_failure({:storage_failed, detail}),
+    do: "Couldn't store the image (#{inspect(detail)}) — storage may be misconfigured; try again"
 
   defp upload_failure(reason), do: "Upload failed: #{inspect(reason)}"
 

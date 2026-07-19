@@ -11,7 +11,7 @@ defmodule Uitstalling.AccountsTest do
   end
 
   test "an invited user can register despite a closed allowlist, keeping their invite name" do
-    with_allowlist(["only-ross@example.com"])
+    with_allowlist(["only-the-owner@example.com"])
 
     invited = Accounts.invite_user("Friend@Example.com  ", "Sam Marais")
     assert invited.email == "friend@example.com"

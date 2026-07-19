@@ -18,8 +18,16 @@ defmodule UitstallingWeb.HomeLive do
         user.name |> String.split(" ", trim: true) |> List.first()
       end
 
+    public_slug = if author?, do: Accounts.ensure_slug!(user).slug
+
     {:ok,
-     assign(socket, page_title: "UIT", author?: author?, decks: decks, greet_name: greet_name)}
+     assign(socket,
+       page_title: "UIT",
+       author?: author?,
+       decks: decks,
+       greet_name: greet_name,
+       public_slug: public_slug
+     )}
   end
 
   def render(assigns) do
@@ -66,7 +74,16 @@ defmodule UitstallingWeb.HomeLive do
 
         <section :if={@author?} class="mt-16">
           <div class="flex items-center justify-between mb-4">
-            <p class="font-mono text-zinc-500 text-xs tracking-wider">YOUR PRESENTATIONS</p>
+            <p class="font-mono text-zinc-500 text-xs tracking-wider">
+              YOUR PRESENTATIONS
+              <.link
+                :if={@public_slug}
+                navigate={"/#{@public_slug}"}
+                class="ml-3 text-zinc-600 hover:text-amber-400 normal-case tracking-normal"
+              >
+                → your public page: /{@public_slug}
+              </.link>
+            </p>
             <.link
               href={~p"/auth/logout"}
               method="delete"

@@ -14,6 +14,7 @@ defmodule Uitstalling.Accounts.User do
   schema "users" do
     field :email, :string
     field :name, :string
+    field :slug, :string
     field :anonymous, :boolean, default: true
 
     has_many :decks, Uitstalling.Decks.Stored

@@ -40,6 +40,8 @@ npm-debug.log
 
 .DS_Store
 
+docs/*
+
 # Cached GeoJSON for scripts/generate_world_map.py — re-fetched on demand
 /scripts/.ne_*.geojson
 

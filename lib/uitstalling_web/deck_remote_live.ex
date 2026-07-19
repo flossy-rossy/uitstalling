@@ -7,10 +7,24 @@ defmodule UitstallingWeb.DeckRemoteLive do
 
   use UitstallingWeb, :live_view
 
+  alias Uitstalling.Accounts
   alias Uitstalling.Decks
   alias Uitstalling.Decks.Slide
 
+  def mount(%{"user_slug" => user_slug, "deck_slug" => deck_slug}, _session, socket) do
+    with %{} = owner <- Accounts.get_user_by_slug(user_slug),
+         deck_id when is_binary(deck_id) <- Decks.deck_id_for(owner.id, deck_slug) do
+      mount_remote(deck_id, socket)
+    else
+      _ -> {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
+    end
+  end
+
   def mount(%{"id" => deck_id}, _session, socket) do
+    mount_remote(deck_id, socket)
+  end
+
+  defp mount_remote(deck_id, socket) do
     if Decks.exists?(deck_id) do
       deck = Decks.deck!(deck_id)
       topic = "deck:#{deck_id}"

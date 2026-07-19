@@ -7,13 +7,40 @@ defmodule Uitstalling.Accounts do
   (the future public mode). Presenting is always public — no user needed.
   """
 
+  import Ecto.Query
+
   alias Uitstalling.Accounts.User
   alias Uitstalling.Repo
+  alias Uitstalling.Slug
 
   def get_user(nil), do: nil
   def get_user(id), do: Repo.get(User, id)
 
   def get_user_by_email(email) when is_binary(email), do: Repo.get_by(User, email: email)
+
+  @doc "The user whose public page lives at /:slug, or nil."
+  def get_user_by_slug(slug) when is_binary(slug) and slug != "",
+    do: Repo.get_by(User, slug: slug)
+
+  def get_user_by_slug(_slug), do: nil
+
+  @doc """
+  Make sure the user has a public-page slug, minting one from their name
+  (email local part as fallback) on first need. Once set it never changes —
+  it's in people's shared links.
+  """
+  def ensure_slug!(%User{slug: slug} = user) when is_binary(slug) and slug != "", do: user
+
+  def ensure_slug!(%User{} = user) do
+    source = user.name || (user.email && hd(String.split(user.email, "@"))) || "presenter"
+
+    slug =
+      Slug.unique(source, "presenter", fn candidate ->
+        Repo.exists?(from(u in User, where: u.slug == ^candidate))
+      end)
+
+    user |> Ecto.Changeset.change(slug: slug) |> Repo.update!()
+  end
 
   @doc """
   Invite someone by email, setting the display name shown in their welcome
@@ -35,6 +62,7 @@ defmodule Uitstalling.Accounts do
       user ->
         user |> Ecto.Changeset.change(name: name, anonymous: false) |> Repo.update!()
     end
+    |> ensure_slug!()
   end
 
   @doc """
@@ -47,10 +75,10 @@ defmodule Uitstalling.Accounts do
 
     cond do
       user = get_user_by_email(email) ->
-        {:ok, user}
+        {:ok, ensure_slug!(user)}
 
       allowed_email?(email) ->
-        {:ok, Repo.insert!(%User{email: email, name: name, anonymous: false})}
+        {:ok, ensure_slug!(Repo.insert!(%User{email: email, name: name, anonymous: false}))}
 
       true ->
         {:error, :not_allowed}

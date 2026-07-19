@@ -19,6 +19,8 @@ defmodule Uitstalling.Assets do
 
   import Ecto.Query
 
+  require Logger
+
   alias Uitstalling.Assets.Asset
   alias Uitstalling.Assets.Generator
   alias Uitstalling.Repo
@@ -80,8 +82,13 @@ defmodule Uitstalling.Assets do
   defp insert_asset(user_id, origin, source, size, content_type, ext, extra) do
     id = generate_id()
     key = "#{id}.#{ext}"
-    :ok = store(key, source, content_type)
 
+    with :ok <- store(key, source, content_type) do
+      do_insert_asset(id, key, user_id, origin, size, content_type, extra)
+    end
+  end
+
+  defp do_insert_asset(id, key, user_id, origin, size, content_type, extra) do
     asset =
       Repo.insert!(%Asset{
         id: id,
@@ -187,8 +194,12 @@ defmodule Uitstalling.Assets do
             {:bytes, bytes} -> bytes
           end
 
-        %Req.Response{status: 200} =
-          Req.put!(object_url(opts, key),
+        # A failed PUT must surface as an error the UI can show — a crash
+        # here kills the LiveView, which remounts silently and looks like
+        # "upload said done but nothing happened". HTTP.options adds
+        # transient retries (idempotent: same key, same bytes).
+        request =
+          Uitstalling.HTTP.options(
             body: body,
             headers: [{"content-type", content_type}],
             aws_sigv4: [
@@ -199,7 +210,18 @@ defmodule Uitstalling.Assets do
             ]
           )
 
-        :ok
+        case Req.put(object_url(opts, key), request) do
+          {:ok, %Req.Response{status: 200}} ->
+            :ok
+
+          {:ok, %Req.Response{status: status, body: resp_body}} ->
+            Logger.warning("asset storage PUT #{status} for #{key}: #{inspect(resp_body)}")
+            {:error, {:storage_failed, status}}
+
+          {:error, reason} ->
+            Logger.warning("asset storage PUT failed for #{key}: #{inspect(reason)}")
+            {:error, {:storage_failed, reason}}
+        end
     end
   end
 
@@ -212,14 +234,17 @@ defmodule Uitstalling.Assets do
     end
   end
 
+  # Virtual-host style (bucket.host/key) for BOTH writes and public reads —
+  # Tigris dropped path-style (host/bucket/key) for buckets created after
+  # 2025-02-19, so path-style requests fail against any new bucket.
+  # Public reads additionally require the bucket to be public
+  # (`fly storage create --public`, or flip it in `fly storage dashboard`).
+  # Presigned URLs can replace public reads if the bucket ever goes private.
   defp object_url(opts, key) do
-    endpoint = String.trim_trailing(opts[:endpoint] || "https://fly.storage.tigris.dev", "/")
-    "#{endpoint}/#{opts[:bucket]}/#{key}"
+    uri = URI.parse(opts[:endpoint] || "https://fly.storage.tigris.dev")
+    "#{uri.scheme}://#{opts[:bucket]}.#{uri.host}/#{key}"
   end
 
-  # Public path-style URL — requires the bucket to be public
-  # (`fly storage create --public`). Presigned URLs can replace this if the
-  # bucket ever needs to be private.
   defp public_url(opts, key), do: object_url(opts, key)
 
   # ----- Upload validation -----------------------------------------------------
