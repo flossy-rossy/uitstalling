@@ -353,7 +353,11 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
 
     asset = Assets.get(slide["image"]["asset_id"])
     assert asset.origin == "gen"
-    assert asset.prompt == "an isometric phishing proxy"
+    # The stored prompt is the composed one: subject + deck/slide art direction
+    assert asset.prompt =~ "an isometric phishing proxy"
+    assert asset.prompt =~ "amber"
+    assert asset.prompt =~ "Passwordless / WebAuthn"
+    assert asset.prompt =~ "§ 0 · FRAMING"
     assert Assets.ready?(asset.id)
 
     assert {:file, path, "image/png"} = Assets.serve(asset)
@@ -452,6 +456,6 @@ defmodule Uitstalling.Decks.DeckWorkerTest do
     slide = Enum.at(Decks.load_raw!("demo")["slides"], 1)
     assert slide["heading"] == "AGENT: WANTS_IMAGE: add a diagram"
     assert %{"asset_id" => "ast_" <> _} = slide["image"]
-    assert Assets.get(slide["image"]["asset_id"]).prompt == "a diagram of the login flow"
+    assert Assets.get(slide["image"]["asset_id"]).prompt =~ "a diagram of the login flow"
   end
 end

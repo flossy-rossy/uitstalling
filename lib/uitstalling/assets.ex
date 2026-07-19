@@ -124,6 +124,48 @@ defmodule Uitstalling.Assets do
     "ast_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
   end
 
+  # Art direction per deck theme — images must sit ON the slide, not fight it.
+  @theme_direction %{
+    "noir" => "near-black background with warm amber accent lighting",
+    "midnight" => "deep navy background with cyan accent lighting"
+  }
+
+  @doc """
+  Compose the full generation prompt for an image on a slide: the subject
+  first, then the deck's art direction (theme, title, voice) and the slide's
+  own context (section kicker, heading) so the image belongs to THIS deck
+  and THIS moment in it — never a context-free stock-alike.
+  """
+  def image_prompt(raw, slide, subject) do
+    direction = @theme_direction[raw["theme"]] || @theme_direction["noir"]
+
+    slide_context =
+      [
+        is_binary(slide["kicker"]) && slide["kicker"] != "" && "section \"#{slide["kicker"]}\"",
+        is_binary(slide["heading"]) && slide["heading"] != "" &&
+          "slide heading \"#{slide["heading"]}\""
+      ]
+      |> Enum.filter(&is_binary/1)
+      |> case do
+        [] -> ""
+        parts -> "It illustrates the #{Enum.join(parts, ", ")}.\n"
+      end
+
+    voice =
+      case raw["voice"] do
+        v when is_binary(v) and v != "" -> "Tone: #{v}.\n"
+        _ -> ""
+      end
+
+    """
+    #{subject}
+
+    A 16:9 visual for one slide of a presentation titled "#{raw["title"]}".
+    #{slide_context}#{voice}Style: #{direction}; modern, minimal, high contrast; \
+    no embedded text or captions unless the subject explicitly asks for them.
+    """
+  end
+
   # ----- Storage --------------------------------------------------------------
 
   defp store(key, source, content_type) do

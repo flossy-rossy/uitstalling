@@ -62,3 +62,9 @@ config :uitstalling, :image_generator, Uitstalling.Assets.Generator.Fake
 
 # Short generation timeout so hang-handling is testable.
 config :uitstalling, :image_gen_timeout, 500
+
+# Provider HTTP goes through a Req.Test plug (any unstubbed call fails
+# loudly) with zero retry backoff so retry tests run instantly.
+config :uitstalling, :req_options,
+  plug: {Req.Test, Uitstalling.ProviderStub},
+  retry_delay: 0

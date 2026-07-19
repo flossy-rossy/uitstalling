@@ -25,7 +25,7 @@ defmodule Uitstalling.Decks.Agent.Claude do
     system = [edit_system_prompt(), edit_context_prompt(deck)]
 
     with {:ok, api_key} <- fetch_api_key(),
-         {:ok, text} <- call_api(api_key, system, edit_user_prompt(request, retry), 4096) do
+         {:ok, text} <- call_api(api_key, system, edit_user_prompt(deck, request, retry), 4096) do
       extract_json(text)
     end
   end
@@ -35,7 +35,7 @@ defmodule Uitstalling.Decks.Agent.Claude do
     system = [ops_system_prompt(), edit_context_prompt(deck)]
 
     with {:ok, api_key} <- fetch_api_key(),
-         {:ok, text} <- call_api(api_key, system, ops_user_prompt(request, retry), 2048) do
+         {:ok, text} <- call_api(api_key, system, ops_user_prompt(deck, request, retry), 2048) do
       extract_json(text)
     end
   end
@@ -44,7 +44,7 @@ defmodule Uitstalling.Decks.Agent.Claude do
   def generate_deck(request, retry) do
     with {:ok, api_key} <- fetch_api_key(),
          {:ok, text} <-
-           call_api(api_key, [create_system_prompt()], create_user_prompt(request, retry), 16_000) do
+           call_api(api_key, [create_system_prompt()], create_user_prompt(request, retry), 24_000) do
       extract_json(text)
     end
   end
@@ -65,13 +65,16 @@ defmodule Uitstalling.Decks.Agent.Claude do
       |> String.trim_trailing("/")
       |> Kernel.<>("/v1/messages")
 
-    case Req.post(url,
-           json: body,
-           headers: [
-             {"x-api-key", api_key},
-             {"anthropic-version", "2023-06-01"}
-           ],
-           receive_timeout: 300_000
+    case Req.post(
+           url,
+           Uitstalling.HTTP.options(
+             json: body,
+             headers: [
+               {"x-api-key", api_key},
+               {"anthropic-version", "2023-06-01"}
+             ],
+             receive_timeout: 300_000
+           )
          ) do
       {:ok, %Req.Response{status: 200, body: %{"content" => content} = resp}} ->
         case resp["stop_reason"] do
@@ -148,16 +151,31 @@ defmodule Uitstalling.Decks.Agent.Claude do
   end
 
   @doc false
-  def edit_user_prompt(request, retry) do
+  def edit_user_prompt(deck, request, retry) do
     """
     Edit request for the slide with id=#{request["slide_id"]} (layout=#{request["layout"]}):
     "#{request["prompt"]}"
-
+    #{slide_context_line(deck, request["slide_id"])}
     The request applies to the whole slide.
 
     Return the complete replacement JSON object for this one slide.
     #{retry_block(retry)}
     """
+  end
+
+  # Anchor the edit in the deck's arc — the full deck is in the context
+  # block, but small models miss it; say where this slide sits explicitly.
+  defp slide_context_line(deck, slide_id) do
+    slide = Enum.find(List.wrap(deck["slides"]), &(is_map(&1) and &1["id"] == slide_id))
+
+    case slide do
+      %{"kicker" => kicker} when is_binary(kicker) and kicker != "" ->
+        "This slide sits in the section \"#{kicker}\" — keep the edit coherent with that " <>
+          "section and the deck's overall arc.\n"
+
+      _ ->
+        ""
+    end
   end
 
   # ----- Ops prompts (scoped edits emit operations, never slides) ----------------
@@ -198,11 +216,11 @@ defmodule Uitstalling.Decks.Agent.Claude do
   end
 
   @doc false
-  def ops_user_prompt(request, retry) do
+  def ops_user_prompt(deck, request, retry) do
     """
     Edit request for the slide with id=#{request["slide_id"]} (layout=#{request["layout"]}):
     "#{request["prompt"]}"
-
+    #{slide_context_line(deck, request["slide_id"])}
     #{target_description(request["target"])}
 
     Return {"ops": [...]} performing exactly this change.
@@ -243,6 +261,16 @@ defmodule Uitstalling.Decks.Agent.Claude do
     - Kickers ("§ 1 · TOPIC" style) keep the audience oriented — use them.
     - Add speaker "notes" to the slides where delivery guidance helps.
     - Hit the requested slide count within ±2 slides.
+
+    Quality bar — what separates a good deck from filler:
+    - Slides are not essays: short, punchy lines; at most ~5 bullets on a
+      slide; one idea per slide. The narration belongs in "notes".
+    - Be concrete and specific: real numbers, named examples, sharp claims —
+      never generic filler like "in today's fast-paced world".
+    - Use ==accent== marks on THE key phrase of a slide (sparingly — one or
+      two per slide), **strong** for emphasis, `code` for identifiers.
+    - Make the deck tell a story: a hook up front, rising stakes, a payoff.
+      Section kickers should trace that arc.
 
     #{Decks.schema_prompt()}
     """
@@ -289,21 +317,27 @@ defmodule Uitstalling.Decks.Agent.Claude do
   end
 
   # The model is asked for bare JSON, but be lenient: try the whole reply,
-  # then each fenced block, then the outermost brace span. First candidate
-  # that decodes to an object wins.
+  # then each fenced block, then the outermost brace span. Among candidates
+  # that decode to an object, the LARGEST wins — a reply that narrates with
+  # a small example object before the real payload must not have its example
+  # parsed as the answer.
   @doc false
   def extract_json(text) do
     text = String.trim(text)
 
     candidates = [text] ++ fenced_blocks(text) ++ brace_span(text)
 
-    decoded = Enum.map(candidates, &Jason.decode/1)
+    decoded = Enum.map(candidates, &{&1, Jason.decode(&1)})
+
+    objects =
+      for {source, {:ok, %{} = object}} <- decoded, do: {byte_size(source), object}
 
     cond do
-      object = Enum.find_value(decoded, &match_object/1) ->
+      objects != [] ->
+        {_size, object} = Enum.max_by(objects, &elem(&1, 0))
         {:ok, object}
 
-      Enum.any?(decoded, &match?({:ok, _}, &1)) ->
+      Enum.any?(decoded, &match?({_, {:ok, _}}, &1)) ->
         {:error, :not_an_object}
 
       true ->
@@ -311,12 +345,9 @@ defmodule Uitstalling.Decks.Agent.Claude do
     end
   end
 
-  defp match_object({:ok, %{} = object}), do: object
-  defp match_object(_), do: nil
-
   defp first_decode_error(decoded) do
     Enum.find_value(decoded, "no JSON found", fn
-      {:error, err} -> Exception.message(err)
+      {_source, {:error, err}} -> Exception.message(err)
       _ -> nil
     end)
   end

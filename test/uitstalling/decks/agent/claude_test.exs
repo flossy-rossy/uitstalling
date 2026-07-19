@@ -23,18 +23,20 @@ defmodule Uitstalling.Decks.Agent.ClaudeTest do
       assert {:ok, %{"layout" => "statement"}} = Claude.extract_json(text)
     end
 
-    test "takes the first decodable object when there are multiple fences" do
+    test "prefers the LARGEST decodable object — narration examples don't win" do
       text = """
+      Here's a tiny example of the shape:
       ```json
-      {"which": "first"}
+      {"layout": "statement"}
       ```
-      and an alternative:
+      And the actual slide you asked for:
       ```json
-      {"which": "second"}
+      {"layout": "statement", "body": "the real, much longer payload wins"}
       ```
       """
 
-      assert {:ok, %{"which" => "first"}} = Claude.extract_json(text)
+      assert {:ok, %{"body" => "the real, much longer payload wins"}} =
+               Claude.extract_json(text)
     end
 
     test "a truncated object is invalid JSON, not a crash" do
@@ -63,6 +65,7 @@ defmodule Uitstalling.Decks.Agent.ClaudeTest do
     test "retry prompt carries the rejected attempt and the errors" do
       prompt =
         Claude.edit_user_prompt(
+          %{},
           %{"slide_id" => "s1", "layout" => "statement", "prompt" => "fix it"},
           %{
             errors: ["slide.body: required non-empty string"],
@@ -79,11 +82,24 @@ defmodule Uitstalling.Decks.Agent.ClaudeTest do
     test "first-attempt prompt has no retry block" do
       prompt =
         Claude.edit_user_prompt(
+          %{},
           %{"slide_id" => "s1", "layout" => "statement", "prompt" => "fix it"},
           nil
         )
 
       refute prompt =~ "previous attempt"
+    end
+
+    test "edit prompts anchor the slide in its section when it has a kicker" do
+      deck = %{
+        "slides" => [%{"id" => "s1", "layout" => "statement", "kicker" => "§ 2 · WHY IT WORKS"}]
+      }
+
+      request = %{"slide_id" => "s1", "layout" => "statement", "prompt" => "fix it"}
+
+      assert Claude.edit_user_prompt(deck, request, nil) =~ "§ 2 · WHY IT WORKS"
+      assert Claude.ops_user_prompt(deck, request, nil) =~ "§ 2 · WHY IT WORKS"
+      refute Claude.edit_user_prompt(%{}, request, nil) =~ "section"
     end
   end
 end

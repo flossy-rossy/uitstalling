@@ -12,9 +12,9 @@ kill_signal = 'SIGTERM'
 
 [env]
   # PHX_HOST is also the WebAuthn RP id — passkeys are bound to this host, so
-  # changing it later invalidates existing passkeys. Set to your custom domain
-  # here (and re-register) before inviting people you don't want to re-enroll.
-  PHX_HOST = 'uitstalling.fly.dev'
+  # changing it later invalidates existing passkeys. Don't enroll passkeys
+  # until the cert for this domain is issued and you're browsing via it.
+  PHX_HOST = 'uitstalling.co.za'
   PHX_SERVER = 'true'
   PORT = '8080'
 

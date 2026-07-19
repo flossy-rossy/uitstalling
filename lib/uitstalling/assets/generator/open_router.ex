@@ -35,7 +35,14 @@ defmodule Uitstalling.Assets.Generator.OpenRouter do
       # provider fails the request instead of wedging the deck's queue.
       timeout = Application.get_env(:uitstalling, :image_gen_timeout, 120_000)
 
-      case Req.post(url, json: body, auth: {:bearer, api_key}, receive_timeout: timeout) do
+      case Req.post(
+             url,
+             Uitstalling.HTTP.options(
+               json: body,
+               auth: {:bearer, api_key},
+               receive_timeout: timeout
+             )
+           ) do
         {:ok, %Req.Response{status: 200, body: %{"data" => [%{"b64_json" => b64} = image | _]}}} ->
           case Base.decode64(b64) do
             {:ok, bytes} ->

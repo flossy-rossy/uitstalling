@@ -1,9 +1,13 @@
 # Edit Operations — the one-page contract
 
-Status: **spec** (pre-implementation). This document is the single source of
-truth for the ops pivot: the validator, the model prompt/JSON Schema, the
-channel protocol for future multi-user editing, and the edit timeline are all
-generated from or checked against it.
+Status: **steps 1–3 implemented** (part ids · `Uitstalling.Decks.Op`
+parse/apply/invert · agent emits ops for block-scoped edits; whole-slide
+replacement retained for rework). Still to come: grid arrangement, fan-out
+with `base` preconditions, delta broadcasts, the edit-log table, channels.
+This document is the single source of truth for the ops pivot: the
+validator, the model prompt/JSON Schema, the channel protocol for future
+multi-user editing, and the edit timeline are all generated from or checked
+against it.
 
 ## Why ops
 
@@ -38,14 +42,35 @@ Ops address **parts by stable id**, never by positional index. Prerequisites
   coordinates. The renderer owns spacing/alignment; position is semantic
   data.
 
+## Representation: structs inside, JSON at the boundary
+
+Inside the app an op is an **Elixir struct, one module per op type**
+(`Uitstalling.Decks.Op.SetField`, `Op.RemovePart`, …):
+
+- The applicator is pattern-matched function heads
+  (`def apply(%Op.SetField{} = op, raw)`) — same dispatch shape as the
+  validator and renderer. Illegal ops are unrepresentable, not
+  validated-away.
+- Each op implements `invert(op, raw_before)` — undo becomes "apply the
+  inverse batch" instead of whole-deck snapshots, which is also what makes
+  per-user undo possible in multi-user editing.
+- `@derive Jason.Encoder` on each struct covers the outbound wire
+  (PubSub-to-client payloads, the edit-timeline API). Inbound, Jason only
+  produces maps, so one `Op.parse/1` casts untrusted JSON (model replies via
+  structured outputs, channel clients later) into structs or returns a
+  per-op error — the single trust boundary for ops, the way `Decks.parse/1`
+  is for documents. The model-facing JSON Schema and `Op.parse/1` derive
+  from the same op definitions.
+
 ## The vocabulary
 
 An **op batch** is what one agent call or one user action produces: a list of
-ops plus a precondition.
+ops plus a precondition. (Shown as wire JSON; in-app these are the structs
+above.)
 
 ```json
 {
-  "base": "<slide content hash the ops were computed against>",
+  "base": "<deck seq the ops were computed against>",
   "ops": [
     {"op": "set_field",    "slide": "s3", "part": "p2", "field": "body", "value": "…"},
     {"op": "delete_field", "slide": "s3", "part": "p2", "field": "arrow_label"},
@@ -83,9 +108,33 @@ Rules:
    terms ("op 2: steps requires actor") — the retry loop feeds them back with
    the rejected batch, same contract as today.
 3. **Atomicity**: a batch applies entirely or not at all.
-4. **Timeline**: every applied batch is appended to an edit log
-   (request id, actor user|agent, base, ops, resulting hash). Undo becomes
-   "apply the inverse batch"; multi-user joins replay the log.
+4. **Timeline — the deck IS an event log, materialized eagerly.** Every
+   write appends one row to `deck_events`
+   (`deck_id · seq · type · payload · actor · request_id? · inserted_at`)
+   AND updates the deck's document row in the same transaction. Reads never
+   fold — the doc row is the eagerly-materialized fold, and a test invariant
+   asserts `fold(events) == doc` so fold drift is a CI failure, not silent
+   data corruption. Event types: `deck.created` (prompt + choices),
+   `deck.generated` (full-JSON snapshot — every deck's replay horizon starts
+   here), `ops.applied` (the REALIZED batch from `apply_batch` — the batch,
+   not the op, is the event: atomicity and undo are batch-level, and most
+   batches are one op anyway), `slide.replaced` (whole-slide rework), and
+   `deck.snapshot` (fallback for not-yet-op-shaped writes; also emitted
+   before deploying op-schema changes so old shapes never need re-folding).
+   The fold function stays dumb: apply event to doc — validation and
+   migration remain at the write boundary. Undo = apply the inverse batch;
+   forks and time-scrubbing = fold a prefix.
+5. **Broadcast the delta**: `{:op_applied, batch, seq}` instead of
+   `:deck_updated` — LiveViews apply it to in-memory state with no reload
+   query, spinners key on the ops' targets. `seq` doubles as the `base`
+   precondition (replacing content hashes): "computed against seq N" is the
+   staleness check for fan-out and multi-user.
+6. **The worker applies, it does not generate.** Generation — model calls,
+   image providers — runs OFF the deck worker, concurrently; only the apply
+   step serializes per deck (microseconds). An image generation submits its
+   attach-op when the asset is ready, so images never block text edits and
+   vice versa. This replaces the current blocking-generation DeckWorker
+   behavior when ops land.
 
 ## Model contract
 

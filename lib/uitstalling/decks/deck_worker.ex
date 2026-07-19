@@ -480,10 +480,22 @@ defmodule Uitstalling.Decks.DeckWorker do
   # ----- Asset: generate an image and attach it to its slide ----------------------
 
   defp generate_and_attach(request) do
-    owner_id = Decks.owner_id(request["deck_id"])
+    raw = Decks.load_raw!(request["deck_id"])
 
-    with {:ok, asset} <- Assets.create_generated(owner_id, request["prompt"]) do
-      attach(request, asset)
+    # Compose the prompt from the deck's theme/title/voice and the slide's
+    # own context — and fail BEFORE paying for a generation if the slide is
+    # already gone.
+    case Enum.find(raw["slides"], &(is_map(&1) and &1["id"] == request["slide_id"])) do
+      nil ->
+        {:error, :slide_not_found}
+
+      slide ->
+        owner_id = Decks.owner_id(request["deck_id"])
+        prompt = Assets.image_prompt(raw, slide, request["prompt"])
+
+        with {:ok, asset} <- Assets.create_generated(owner_id, prompt) do
+          attach(request, asset)
+        end
     end
   end
 
@@ -546,8 +558,9 @@ defmodule Uitstalling.Decks.DeckWorker do
 
   defp repair_errors(:truncated) do
     [
-      "response: the reply was cut off before it completed — produce tighter, shorter " <>
-        "content so the complete JSON object fits"
+      "response: the reply was cut off before it completed — keep the same scope and " <>
+        "quality but trim your LONGEST bodies/notes so the complete JSON object fits; " <>
+        "do not drop slides or hollow out the content"
     ]
   end
 

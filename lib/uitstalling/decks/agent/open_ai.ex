@@ -24,7 +24,9 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
 
     with {:ok, api_key} <- Claude.fetch_api_key(),
          {:ok, text} <-
-           call_api(api_key, system, Claude.edit_user_prompt(request, retry), max_tokens: 4096) do
+           call_api(api_key, system, Claude.edit_user_prompt(deck, request, retry),
+             max_tokens: 4096
+           ) do
       Claude.extract_json(text)
     end
   end
@@ -35,7 +37,9 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
 
     with {:ok, api_key} <- Claude.fetch_api_key(),
          {:ok, text} <-
-           call_api(api_key, system, Claude.ops_user_prompt(request, retry), max_tokens: 2048) do
+           call_api(api_key, system, Claude.ops_user_prompt(deck, request, retry),
+             max_tokens: 2048
+           ) do
       Claude.extract_json(text)
     end
   end
@@ -75,11 +79,14 @@ defmodule Uitstalling.Decks.Agent.OpenAI do
       |> String.trim_trailing("/")
       |> Kernel.<>("/chat/completions")
 
-    case Req.post(url,
-           json: body,
-           auth: {:bearer, api_key},
-           headers: attribution_headers(),
-           receive_timeout: 300_000
+    case Req.post(
+           url,
+           Uitstalling.HTTP.options(
+             json: body,
+             auth: {:bearer, api_key},
+             headers: attribution_headers(),
+             receive_timeout: 300_000
+           )
          ) do
       {:ok, %Req.Response{status: 200, body: %{"choices" => [choice | _]}}} ->
         # "length" = the reply (or its reasoning) exhausted max_tokens —
