@@ -14,15 +14,6 @@
       type="email"
       autocomplete="email"
       placeholder="you@example.com"
-      class="mb-4 w-full rounded-lg bg-zinc-900 ring-1 ring-zinc-700 focus:ring-amber-500 border-0 px-3 py-2 text-zinc-100"
-    />
-
-    <label class="block text-sm font-medium mb-1" for="signup-name">Name (optional)</label>
-    <input
-      id="signup-name"
-      type="text"
-      autocomplete="name"
-      placeholder="Your name"
       class="mb-6 w-full rounded-lg bg-zinc-900 ring-1 ring-zinc-700 focus:ring-amber-500 border-0 px-3 py-2 text-zinc-100"
     />
 
@@ -32,7 +23,6 @@
       data-begin-url={~p"/auth/register/begin"}
       data-complete-url={~p"/auth/register/complete"}
       data-email-input="signup-email"
-      data-name-input="signup-name"
       data-status-target="webauthn-status"
       class="w-full rounded-lg bg-amber-500 hover:bg-amber-400 px-6 py-4 text-lg font-bold text-zinc-950 transition disabled:opacity-50"
     >

@@ -134,6 +134,11 @@ if config_env() == :prod do
 
   config :uitstalling, UitstallingWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
+    # LiveView websockets check the browser's Origin against this list; with
+    # only PHX_HOST allowed, visiting via the fly.dev URL loads the page but
+    # never connects the socket (the "stuck loading bar"). Allow both — the
+    # fly.dev host stays view-only anyway since passkeys bind to PHX_HOST.
+    check_origin: ["https://#{host}", "https://uitstalling.fly.dev"],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.

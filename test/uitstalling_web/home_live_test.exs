@@ -23,6 +23,17 @@ defmodule UitstallingWeb.HomeLiveTest do
     assert {:error, {:redirect, %{to: "/auth/login"}}} = live(build_conn(), "/new")
   end
 
+  test "a fresh invitee gets the personal welcome splash until their first deck", %{conn: _} do
+    invited = Uitstalling.Accounts.invite_user("fresh@example.com", "Sam Marais")
+    conn = Plug.Test.init_test_session(build_conn(), %{"user_id" => invited.id})
+
+    {:ok, _view, html} = live(conn, "/")
+    assert html =~ "Welcome"
+    assert html =~ "Sam"
+    assert html =~ "get you presenting"
+    refute html =~ "Describe your talk."
+  end
+
   test "home lists decks with links to present", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
 

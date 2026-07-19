@@ -11,7 +11,15 @@ defmodule UitstallingWeb.HomeLive do
     author? = Accounts.can_author?(user)
     decks = if author?, do: Decks.list(user.id), else: []
 
-    {:ok, assign(socket, page_title: "UIT", author?: author?, decks: decks)}
+    # First splash for a fresh invitee: greet them by the name set at invite
+    # time. Once they have decks, the standard headline returns.
+    greet_name =
+      if author? and decks == [] and is_binary(user.name) and user.name != "" do
+        user.name |> String.split(" ", trim: true) |> List.first()
+      end
+
+    {:ok,
+     assign(socket, page_title: "UIT", author?: author?, decks: decks, greet_name: greet_name)}
   end
 
   def render(assigns) do
@@ -24,8 +32,13 @@ defmodule UitstallingWeb.HomeLive do
               UIT · uitstalling
             </p>
             <h1 class="mt-4 text-5xl sm:text-6xl font-bold leading-tight">
-              Describe your talk.<br />
-              <span class="text-amber-400">Get your deck.</span>
+              <%= if @greet_name do %>
+                Welcome <span class="text-amber-400">{@greet_name}</span>,<br />
+                let's get you presenting.
+              <% else %>
+                Describe your talk.<br />
+                <span class="text-amber-400">Get your deck.</span>
+              <% end %>
             </h1>
           </div>
           <.link

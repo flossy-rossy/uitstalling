@@ -15,23 +15,49 @@ defmodule Uitstalling.Accounts do
 
   def get_user_by_email(email) when is_binary(email), do: Repo.get_by(User, email: email)
 
-  @doc "Find or create a registered user for an allowlisted email. Errors otherwise."
-  def register_user(email, name \\ nil) do
-    email = email |> to_string() |> String.trim() |> String.downcase()
+  @doc """
+  Invite someone by email, setting the display name shown in their welcome
+  splash — the signup form itself only asks for email. Run from a prod IEx:
 
-    cond do
-      not allowed_email?(email) ->
-        {:error, :not_allowed}
+      fly ssh console --pty -C "/app/bin/uitstalling remote"
+      iex> Uitstalling.Accounts.invite_user("friend@example.com", "Sam")
 
-      user = get_user_by_email(email) ->
-        {:ok, user}
+  An invited row is also an authorization: the email may register a passkey
+  regardless of the AUTHOR_EMAILS allowlist.
+  """
+  def invite_user(email, name) when is_binary(name) do
+    email = normalize_email(email)
 
-      true ->
-        {:ok, Repo.insert!(%User{email: email, name: name, anonymous: false})}
+    case get_user_by_email(email) do
+      nil ->
+        Repo.insert!(%User{email: email, name: name, anonymous: false})
+
+      user ->
+        user |> Ecto.Changeset.change(name: name, anonymous: false) |> Repo.update!()
     end
   end
 
-  @doc "Whether an email may register/author (allowlist; empty list = open)."
+  @doc """
+  Find or create a registered user at passkey registration. An existing row
+  (an invite, or a returning user) always wins — its stored name is kept.
+  Otherwise the email must pass the allowlist.
+  """
+  def register_user(email, name \\ nil) do
+    email = normalize_email(email)
+
+    cond do
+      user = get_user_by_email(email) ->
+        {:ok, user}
+
+      allowed_email?(email) ->
+        {:ok, Repo.insert!(%User{email: email, name: name, anonymous: false})}
+
+      true ->
+        {:error, :not_allowed}
+    end
+  end
+
+  @doc "Whether an email may register via the allowlist (empty list = open)."
   def allowed_email?(email) when is_binary(email) do
     case allowed_emails() do
       [] -> true
@@ -41,11 +67,14 @@ defmodule Uitstalling.Accounts do
 
   def allowed_email?(_), do: false
 
-  @doc "Whether a user may create/edit decks: registered and still allowlisted."
-  def can_author?(nil), do: false
-  def can_author?(%User{anonymous: true}), do: false
-  def can_author?(%User{email: email}) when is_binary(email), do: allowed_email?(email)
+  @doc """
+  Whether a user may create/edit decks: any registered account (allowlisted
+  signup or IEx invite). Revoke by deleting the user row.
+  """
+  def can_author?(%User{anonymous: false, email: email}) when is_binary(email), do: true
   def can_author?(_), do: false
+
+  defp normalize_email(email), do: email |> to_string() |> String.trim() |> String.downcase()
 
   defp allowed_emails do
     Application.get_env(:uitstalling, :allowed_emails, [])

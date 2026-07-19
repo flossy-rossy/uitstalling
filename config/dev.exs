@@ -82,8 +82,13 @@ config :uitstalling, :webauthn,
   origin: "http://localhost:4000",
   rp_name: "uitstalling"
 
+# Dev allowlist comes from the environment — never hardcode emails in a
+# public repo. Empty/unset = open registration (fine for localhost).
 config :uitstalling,
-  allowed_emails: ["REDACTED"]
+  allowed_emails:
+    System.get_env("AUTHOR_EMAILS", "")
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
 
 # Uploaded assets in dev live on local disk, served via /a/:id.
 config :uitstalling, :asset_storage, adapter: :local, dir: "priv/uploads"
