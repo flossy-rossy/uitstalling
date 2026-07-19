@@ -34,6 +34,43 @@ defmodule UitstallingWeb.HomeLiveTest do
     refute html =~ "Describe your talk."
   end
 
+  test "an uploaded research document lands in the create request", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/new")
+
+    xml =
+      ~s(<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>) <>
+        "<w:p><w:r><w:t>WebAuthn shipped in Chrome 67 and covers 99% of users.</w:t></w:r></w:p>" <>
+        "</w:body></w:document>"
+
+    {:ok, {_name, docx}} =
+      :zip.create(~c"mem.zip", [{~c"word/document.xml", xml}], [:memory])
+
+    research =
+      file_input(view, "#create-form", :research, [
+        %{
+          name: "sources.docx",
+          content: docx,
+          type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ])
+
+    render_upload(research, "sources.docx")
+
+    {:error, {:live_redirect, %{to: "/deck/" <> _deck_id}}} =
+      view
+      |> element("#create-form")
+      |> render_submit(%{
+        "theme" => "noir",
+        "voice" => "friendly",
+        "minutes" => "10",
+        "prompt" => "why passkeys beat passwords"
+      })
+
+    [request] = Decks.pending_requests()
+    assert request["research"] =~ "Chrome 67"
+    assert request["research_filename"] == "sources.docx"
+  end
+
   test "home lists decks with links to present", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/")
 

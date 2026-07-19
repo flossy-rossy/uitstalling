@@ -76,8 +76,9 @@ RUN mix release
 # the compiled release and other runtime necessities
 FROM ${RUNNER_IMAGE} AS final
 
+# poppler-utils provides pdftotext — research-document extraction at runtime
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 locales ca-certificates \
+  && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 locales ca-certificates poppler-utils \
   && rm -rf /var/lib/apt/lists/*
 
 # Set the locale

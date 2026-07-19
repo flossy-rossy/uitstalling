@@ -90,6 +90,26 @@ defmodule Uitstalling.Decks.Agent.ClaudeTest do
       refute prompt =~ "previous attempt"
     end
 
+    test "create prompt grounds in uploaded research when present" do
+      request = %{
+        "theme" => "noir",
+        "accent" => "amber",
+        "voice" => "dry",
+        "minutes" => 10,
+        "target_slides" => 8,
+        "prompt" => "passkeys",
+        "research" => "Chrome 67 shipped WebAuthn in 2018.",
+        "research_filename" => "sources.docx"
+      }
+
+      prompt = Claude.create_user_prompt(request, nil)
+      assert prompt =~ "<research>"
+      assert prompt =~ "Chrome 67 shipped WebAuthn in 2018."
+      assert prompt =~ "sources.docx"
+
+      refute Claude.create_user_prompt(Map.drop(request, ~w(research)), nil) =~ "<research>"
+    end
+
     test "edit prompts anchor the slide in its section when it has a kicker" do
       deck = %{
         "slides" => [%{"id" => "s1", "layout" => "statement", "kicker" => "§ 2 · WHY IT WORKS"}]

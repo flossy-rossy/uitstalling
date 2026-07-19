@@ -287,10 +287,33 @@ defmodule Uitstalling.Decks.Agent.Claude do
 
     What the talk is about, and the main points to cover:
     #{request["prompt"]}
-
+    #{research_block(request)}
     Return the complete deck JSON object.
     #{retry_block(retry)}
     """
+  end
+
+  # Author-supplied grounding material, extracted server-side from their
+  # uploaded document. This is the difference between a deck of concrete
+  # claims and a deck of generic filler — the model is told to mine it.
+  defp research_block(request) do
+    case request["research"] do
+      text when is_binary(text) and text != "" ->
+        """
+
+        The author uploaded research material ("#{request["research_filename"] || "document"}").
+        Ground the deck in it: pull the concrete facts, numbers, names, and quotes from this
+        material instead of inventing generic content. Where a specific source or figure
+        carries a slide, a "footnote" is a good place to attribute it.
+
+        <research>
+        #{text}
+        </research>
+        """
+
+      _ ->
+        ""
+    end
   end
 
   defp retry_block(nil), do: ""
