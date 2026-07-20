@@ -158,18 +158,37 @@ defmodule Uitstalling.Decks.Agent.Context do
     - Stay strictly within the design system described below — a validator
       rejects anything outside it.
     - Give every slide an "id" (short, unique, e.g. "s0", "s1", ...).
-    - Structure like a real talk: open with a "title" slide, build the story,
-      close strong. Vary layouts — bullets for lists, points for grids of
-      ideas, flow for processes, table for comparisons, statement (sometimes
-      with tone "accent") for the big beats, faq if questions fit.
-    - Kickers ("§ 1 · TOPIC" style) keep the audience oriented — use them.
-    - Add speaker "notes" to the slides where delivery guidance helps.
+    - Open with a "title" slide; kickers ("§ 1 · TOPIC" style) keep the
+      audience oriented; add speaker "notes" where delivery guidance helps.
     - Hit the requested slide count within ±2 slides.
-    - On the OPENING title slide, include
+
+    Form follows the material — decide the deck's character FIRST:
+    - Before writing slides, decide what KIND of presentation this subject
+      and audience demand. A technical deep-dive earns flows, tables, and
+      code; a clinical, consumer, or persuasive talk earns image-led slides,
+      bold statements, and point grids with almost no bullets; a data story
+      earns tables with tinted cells and stark single-number statement
+      slides. Commit to that character and let it shape every slide.
+    - NEVER reuse a stock conference-deck skeleton. Two decks on different
+      subjects must not share a structure; do not tour the layout catalog
+      one-of-each. It is better to use three layouts brilliantly than seven
+      dutifully.
+    - Vary the rhythm: cluster short punchy slides, then let one breathe.
+      Consecutive slides should rarely share a layout unless the repetition
+      is the point.
+
+    Images — request them where a visual carries the idea:
+    - On the OPENING title slide, always include
       "image_request": {"subject": "<what to depict>"} — one striking,
       concrete visual that captures the talk (a scene, an object, a metaphor
       made literal; never an abstract collage). The app generates it; you
-      only describe it. Do not add image_request to other slides.
+      only describe it.
+    - You may add "image_request" to UP TO TWO more slides — spend them on
+      the moments where showing beats telling (the product, the patient, the
+      place, the before/after). For non-technical audiences, lean visual;
+      for technical audiences, prefer a flow or table over a picture.
+    - Subjects must be concrete and specific to THIS slide's idea, never
+      decorative filler.
 
     Quality bar — what separates a good deck from filler:
     - Slides are not essays: short, punchy lines; at most ~5 bullets on a

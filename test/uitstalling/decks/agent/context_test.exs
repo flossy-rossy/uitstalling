@@ -53,6 +53,17 @@ defmodule Uitstalling.Decks.Agent.ContextTest do
   end
 
   describe "prompts" do
+    test "create prompt demands form-follows-material, not the stock skeleton" do
+      prompt = Context.create_system_prompt()
+
+      assert prompt =~ "NEVER reuse a stock conference-deck skeleton"
+      assert prompt =~ "decide what KIND of presentation"
+      # Title image always; up to two more where showing beats telling —
+      # matches the worker's cap of 3 queued images per create.
+      assert prompt =~ ~s("image_request")
+      assert prompt =~ "UP TO TWO more slides"
+    end
+
     test "edit context prompt uses the deck voice when set" do
       assert Context.edit_context_prompt(%{"voice" => "dry, academic"}) =~ "dry, academic"
     end
