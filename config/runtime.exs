@@ -31,6 +31,25 @@ if bucket = System.get_env("BUCKET_NAME") do
     secret_access_key: System.get_env("AWS_SECRET_ACCESS_KEY")
 end
 
+# Headless Chrome for PDF export — on demand, so Chrome only runs while a
+# deck is being printed. CHROME_EXECUTABLE overrides discovery (set in the
+# Docker image); CHROME_NO_SANDBOX is needed there too, since the container
+# runs Chrome as an unprivileged user without userns. Not configured in
+# test: the supervisor child is skipped and Decks.Pdf is stubbed by a fake.
+if config_env() != :test do
+  config :uitstalling,
+         :chromic_pdf,
+         Enum.reject(
+           [
+             on_demand: true,
+             session_pool: [size: 1],
+             chrome_executable: System.get_env("CHROME_EXECUTABLE"),
+             no_sandbox: System.get_env("CHROME_NO_SANDBOX") in ~w(true 1)
+           ],
+           fn {_key, value} -> value in [nil, false] end
+         )
+end
+
 # Wire format: "anthropic" (default; also Z.ai's GLM endpoint) or "openai"
 # (OpenRouter and most aggregators). Tests pin the Fake agent in test.exs.
 if config_env() != :test do

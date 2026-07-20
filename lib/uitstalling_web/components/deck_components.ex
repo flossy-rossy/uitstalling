@@ -128,6 +128,10 @@ defmodule UitstallingWeb.DeckComponents do
   attr :slide, Uitstalling.Decks.Slide, required: true
   attr :index, :integer, required: true
   attr :edit, :boolean, default: false
+  # Print (PDF) rendering: live-only content must degrade to something a
+  # page can hold — video becomes a still placeholder card, images load
+  # eagerly (Chrome's print skips lazy offscreen images).
+  attr :print, :boolean, default: false
   # Pending agent work as a list of {slide_id, block_path | nil} — a nil block
   # means the whole slide is being regenerated.
   attr :pending, :list, default: []
@@ -194,6 +198,7 @@ defmodule UitstallingWeb.DeckComponents do
           tone={@tone}
           sz={@sz}
           edit={@edit}
+          print={@print}
           index={@index}
           busy_blocks={@busy_blocks}
           muted={@muted}
@@ -209,7 +214,7 @@ defmodule UitstallingWeb.DeckComponents do
           path="image"
           busy_blocks={@busy_blocks}
         >
-          <.asset_image image={@f["image"]} />
+          <.asset_image image={@f["image"]} print={@print} />
         </.block>
         <.block
           :if={@slide.footnote}
@@ -475,8 +480,25 @@ defmodule UitstallingWeb.DeckComponents do
     <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="src">
       <div class="aspect-video bg-zinc-900 rounded-lg overflow-hidden ring-1 ring-zinc-800">
         <%= cond do %>
-          <% @f["kind"] == "video" and @f["src"] -> %>
+          <% not @print and @f["kind"] == "video" and @f["src"] -> %>
             <video src={@f["src"]} class="w-full h-full" controls preload="metadata"></video>
+          <% @f["kind"] == "video" and @f["src"] -> %>
+            <%!-- Print: a PDF can't carry the video, so hold its place with a
+                 card that says where it lives --%>
+            <div class="w-full h-full flex flex-col items-center justify-center gap-3 text-zinc-500">
+              <svg
+                class="w-12 h-12"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="1.5"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M10 8.5l6 3.5-6 3.5z" fill="currentColor" stroke="none" />
+              </svg>
+              <p class="font-mono text-xs">video — plays in the live presentation</p>
+              <p class="font-mono text-[10px] text-zinc-600 max-w-md truncate px-4">{@f["src"]}</p>
+            </div>
           <% @f["kind"] == "image" and @f["src"] -> %>
             <img src={@f["src"]} class="w-full h-full object-contain" alt={@f["caption"] || ""} />
           <% true -> %>
@@ -540,6 +562,7 @@ defmodule UitstallingWeb.DeckComponents do
   # "side" (default) is a restrained inset.
 
   attr :image, :map, default: nil
+  attr :print, :boolean, default: false
 
   # No image yet (generation in flight — the block's busy overlay sits on
   # top of this): an empty frame so the slide shows where it will land.
@@ -564,7 +587,7 @@ defmodule UitstallingWeb.DeckComponents do
         <img
           src={"/a/#{@image["asset_id"]}"}
           alt={@image["alt"] || ""}
-          loading="lazy"
+          loading={if @print, do: "eager", else: "lazy"}
           class={[
             "w-full",
             if(@image["treatment"] == "full",

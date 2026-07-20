@@ -17,6 +17,7 @@ defmodule Uitstalling.Application do
         {Registry, keys: :unique, name: Uitstalling.Decks.Registry},
         {DynamicSupervisor, name: Uitstalling.Decks.WorkerSupervisor, strategy: :one_for_one}
       ] ++
+        chromic_child() ++
         boot_drain_child() ++
         [
           # Start to serve requests, typically the last entry
@@ -38,6 +39,15 @@ defmodule Uitstalling.Application do
       [{Task, &Uitstalling.Decks.DeckWorker.kick_unfinished/0}]
     else
       []
+    end
+  end
+
+  # Headless Chrome for PDF export. Configured in runtime.exs for dev/prod;
+  # absent in test, where Decks.Pdf is stubbed by a fake.
+  defp chromic_child do
+    case Application.get_env(:uitstalling, :chromic_pdf) do
+      nil -> []
+      opts -> [{ChromicPDF, opts}]
     end
   end
 

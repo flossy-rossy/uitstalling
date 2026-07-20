@@ -83,6 +83,7 @@ defmodule UitstallingWeb.DeckLive do
           edit_mode: false,
           selected: nil,
           regen: nil,
+          pdf_modal: false,
           undo: [],
           edit_error: nil,
           pending: [],
@@ -136,6 +137,13 @@ defmodule UitstallingWeb.DeckLive do
       />
 
       <div class="fixed bottom-4 right-6 flex items-center gap-3">
+        <button
+          phx-click="open_pdf"
+          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition flex items-center gap-1.5"
+          title="download this presentation as a PDF backup"
+        >
+          <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5" /> pdf
+        </button>
         <.link
           navigate={@remote_path}
           class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition flex items-center gap-1.5"
@@ -242,6 +250,37 @@ defmodule UitstallingWeb.DeckLive do
       />
 
       <.regen_panel :if={@regen} regen={@regen} />
+
+      <div
+        :if={@pdf_modal}
+        class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6"
+      >
+        <div class="w-full max-w-md bg-zinc-900 ring-1 ring-zinc-700 rounded-xl p-6">
+          <p class="font-mono text-amber-400 text-xs tracking-wider mb-4">DOWNLOAD AS PDF</p>
+          <p class="text-zinc-300 text-sm leading-relaxed">
+            This deck has video on it. A PDF can't play video, so those slides
+            get a still placeholder card instead — everything else comes along
+            as-is. (The phone remote is live-only too.)
+          </p>
+          <div class="mt-6 flex justify-end gap-3">
+            <button
+              phx-click="close_pdf"
+              class="px-5 py-2.5 rounded-lg text-zinc-300 ring-1 ring-zinc-700 hover:text-zinc-100 hover:ring-zinc-500"
+            >
+              Cancel
+            </button>
+            <%!-- phx-click only closes the modal — the anchor's default
+                 navigation still fires and pulls the download. --%>
+            <a
+              href={~p"/deck/#{@deck_id}/pdf"}
+              phx-click="close_pdf"
+              class="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+            >
+              Download PDF
+            </a>
+          </div>
+        </div>
+      </div>
 
       <div
         :if={creating?(@pending)}
@@ -683,6 +722,26 @@ defmodule UitstallingWeb.DeckLive do
 
   def handle_event("nav", %{"dir" => dir}, socket) do
     {:noreply, goto(socket, socket.assigns.index + dir, :broadcast)}
+  end
+
+  # ----- PDF download -----------------------------------------------------------
+  #
+  # Anyone who can view can download. The video check runs here, on click —
+  # not on every render: a deck with video gets a heads-up modal (those
+  # slides degrade to a placeholder in the PDF); one without downloads
+  # immediately. The response is an attachment, so the redirect leaves the
+  # LiveView on screen.
+
+  def handle_event("open_pdf", _params, socket) do
+    if Decks.has_video?(socket.assigns.deck) do
+      {:noreply, assign(socket, pdf_modal: true)}
+    else
+      {:noreply, redirect(socket, to: ~p"/deck/#{socket.assigns.deck_id}/pdf")}
+    end
+  end
+
+  def handle_event("close_pdf", _params, socket) do
+    {:noreply, assign(socket, pdf_modal: false)}
   end
 
   # ----- Edit mode ------------------------------------------------------------

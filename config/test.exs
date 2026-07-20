@@ -60,6 +60,10 @@ config :uitstalling, :asset_storage, adapter: :local, dir: "tmp/test-uploads"
 # Deterministic image generator for tests.
 config :uitstalling, :image_generator, Uitstalling.Assets.Generator.Fake
 
+# No headless Chrome in tests — the PDF renderer is faked. (ChromicPDF
+# itself isn't started either: :chromic_pdf config is dev/prod-only.)
+config :uitstalling, :pdf_renderer, Uitstalling.Decks.Pdf.Fake
+
 # Short generation timeout so hang-handling is testable.
 config :uitstalling, :image_gen_timeout, 500
 

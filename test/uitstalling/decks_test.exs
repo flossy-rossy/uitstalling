@@ -308,6 +308,24 @@ defmodule Uitstalling.DecksTest do
     assert error =~ "unknown keys"
   end
 
+  test "has_video? is true only for a media slide with kind video and a src" do
+    media = fn overrides ->
+      deck = minimal(Map.merge(%{"layout" => "media"}, overrides))
+      deck = update_in(deck, ["slides", Access.at(0)], &Map.delete(&1, "body"))
+      {:ok, parsed} = Decks.parse(deck)
+      parsed
+    end
+
+    {:ok, plain} = Decks.parse(minimal(%{}))
+    refute Decks.has_video?(plain)
+
+    assert Decks.has_video?(media.(%{"kind" => "video", "src" => "https://example.com/a.mp4"}))
+
+    # kind video without a src already renders as a placeholder — nothing to warn about
+    refute Decks.has_video?(media.(%{"kind" => "video"}))
+    refute Decks.has_video?(media.(%{"kind" => "image", "src" => "https://example.com/a.png"}))
+  end
+
   test "schema_prompt stays in sync with the design system" do
     prompt = Decks.schema_prompt()
 

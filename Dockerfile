@@ -76,10 +76,18 @@ RUN mix release
 # the compiled release and other runtime necessities
 FROM ${RUNNER_IMAGE} AS final
 
-# poppler-utils provides pdftotext — research-document extraction at runtime
+# poppler-utils provides pdftotext — research-document extraction at runtime.
+# chromium (+ fonts) renders the deck PDF export via ChromicPDF.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 locales ca-certificates poppler-utils \
+  chromium fonts-liberation fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
+
+# Chrome runs as the unprivileged `nobody` user without userns privileges,
+# so its own sandbox can't start — ChromicPDF passes --no-sandbox. The only
+# pages it ever loads are the app's own print views.
+ENV CHROME_EXECUTABLE=/usr/bin/chromium
+ENV CHROME_NO_SANDBOX=true
 
 # Set the locale
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \

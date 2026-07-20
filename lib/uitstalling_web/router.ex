@@ -47,6 +47,11 @@ defmodule UitstallingWeb.Router do
     # Asset bytes — public like the decks that embed them
     get "/a/:id", AssetController, :show
 
+    # PDF export: /print is the dead render the app's own headless Chrome
+    # prints (public, like presenting); /pdf sends the result as a download.
+    get "/deck/:id/print", DeckPdfController, :print
+    get "/deck/:id/pdf", DeckPdfController, :download
+
     live_session :deck, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/", HomeLive, :index
       live "/new", NewDeckLive, :new

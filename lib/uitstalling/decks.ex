@@ -103,6 +103,16 @@ defmodule Uitstalling.Decks do
   end
 
   @doc """
+  Whether the deck carries any playable video — the one thing a PDF export
+  can't hold, so the UI warns before downloading.
+  """
+  def has_video?(%Deck{slides: slides}) do
+    Enum.any?(slides, fn %Slide{layout: layout, fields: fields} ->
+      layout == "media" and fields["kind"] == "video" and is_binary(fields["src"])
+    end)
+  end
+
+  @doc """
   The design system described for the generation model, derived from the same
   module attributes the validator enforces — one source of truth for schema,
   validator, and prompt.

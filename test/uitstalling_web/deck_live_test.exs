@@ -33,6 +33,37 @@ defmodule UitstallingWeb.DeckLiveTest do
     assert length(deck_on_disk()["slides"]) == 11
   end
 
+  test "pdf button on a video-free deck goes straight to the download", %{conn: conn} do
+    # The demo deck's media slide is an image — no video, no modal
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    assert {:error, {:redirect, %{to: "/deck/demo/pdf"}}} = render_hook(view, "open_pdf", %{})
+  end
+
+  test "pdf button on a deck with video warns before downloading", %{conn: conn, user: user} do
+    Decks.create_deck!(user.id, "vid", %{
+      "title" => "Video deck",
+      "slides" => [
+        %{"id" => "s0", "layout" => "title", "heading" => "Hello"},
+        %{
+          "id" => "s1",
+          "layout" => "media",
+          "kind" => "video",
+          "src" => "https://example.com/clip.mp4"
+        }
+      ]
+    })
+
+    {:ok, view, _html} = live(conn, "/deck/vid")
+
+    html = render_hook(view, "open_pdf", %{})
+    assert html =~ "DOWNLOAD AS PDF"
+    assert html =~ "can&#39;t play video"
+    assert html =~ "/deck/vid/pdf"
+
+    refute render_hook(view, "close_pdf", %{}) =~ "DOWNLOAD AS PDF"
+  end
+
   test "renders every slide of the demo deck", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/deck/demo")
 
