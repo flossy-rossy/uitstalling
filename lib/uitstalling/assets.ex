@@ -75,7 +75,9 @@ defmodule Uitstalling.Assets do
         do: opts[:model],
         else: Application.get_env(:uitstalling, :image_model, ImageModels.default())
 
-    with {:ok, %{bytes: bytes}} <- Generator.impl().generate(prompt, model: model),
+    with {:ok, reference} <- load_reference(opts[:reference_asset_id]),
+         {:ok, %{bytes: bytes}} <-
+           Generator.impl().generate(prompt, model: model, reference: reference),
          :ok <- check_size(bytes),
          {:ok, content_type, ext} <-
            match_signature(binary_part(bytes, 0, min(16, byte_size(bytes)))) do
@@ -86,6 +88,14 @@ defmodule Uitstalling.Assets do
     else
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # A requested reference must load — silently generating without it would
+  # hand back an image that ignores what the author pointed at.
+  defp load_reference(nil), do: {:ok, nil}
+
+  defp load_reference(asset_id) do
+    with {:ok, bytes, content_type} <- fetch_bytes(asset_id), do: {:ok, {bytes, content_type}}
   end
 
   defp check_size(bytes) when byte_size(bytes) <= @max_bytes, do: :ok
@@ -141,6 +151,31 @@ defmodule Uitstalling.Assets do
   @doc "Generate a fresh asset id."
   def generate_id do
     "ast_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  end
+
+  @doc """
+  The stored bytes of a ready asset — for handing an image to a model as a
+  reference. Local storage reads the file; object storage fetches the same
+  public URL a browser would.
+  """
+  def fetch_bytes(asset_id) do
+    with %Asset{status: "ready"} = asset <- get(asset_id) do
+      case serve(asset) do
+        {:file, path, content_type} ->
+          with {:ok, bytes} <- File.read(path), do: {:ok, bytes, content_type}
+
+        {:redirect, url} ->
+          case Req.get(url, Uitstalling.HTTP.options([])) do
+            {:ok, %Req.Response{status: 200, body: bytes}} when is_binary(bytes) ->
+              {:ok, bytes, asset.content_type}
+
+            other ->
+              {:error, {:reference_fetch_failed, other}}
+          end
+      end
+    else
+      _ -> {:error, :reference_not_found}
+    end
   end
 
   # ----- Storage --------------------------------------------------------------

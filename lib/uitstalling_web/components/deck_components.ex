@@ -51,10 +51,19 @@ defmodule UitstallingWeb.DeckComponents do
     "zinc" => {"ring-zinc-700 bg-zinc-900", "text-zinc-300"}
   }
 
+  # Cell tints per base: -400s carry on dark; on pastel they wash out
+  # (amber-400 reads as illegible yellow), so light themes go -700.
   @tints %{
     "ok" => "text-emerald-400",
     "warn" => "text-amber-400",
     "bad" => "text-red-400",
+    "none" => nil
+  }
+
+  @tints_light %{
+    "ok" => "text-emerald-700",
+    "warn" => "text-amber-700",
+    "bad" => "text-red-700",
     "none" => nil
   }
 
@@ -195,6 +204,7 @@ defmodule UitstallingWeb.DeckComponents do
         busy: busy,
         busy_blocks: busy_blocks,
         bg: tone_bg(tone, theme, accent),
+        light: light_theme?(theme),
         muted: muted(tone, theme),
         faint: faint(tone, theme),
         kicker_class: kicker_class(tone, theme, accent),
@@ -216,9 +226,9 @@ defmodule UitstallingWeb.DeckComponents do
         :if={@edit and not @busy}
         phx-click="select_slide"
         phx-value-index={@index}
-        class="absolute top-4 left-1/2 -translate-x-1/2 font-mono text-sm text-zinc-400 bg-zinc-900/90 ring-1 ring-zinc-700 rounded-full px-5 py-2.5 hover:text-amber-400 hover:ring-amber-500 transition"
+        class="absolute top-4 left-1/2 -translate-x-1/2 font-mono text-sm text-zinc-400 bg-zinc-900/90 ring-1 ring-zinc-700 rounded-full px-5 py-2.5 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
       >
-        ✎ click a part to edit its text · click here for slide options
+        ✎ tap any part to edit it · tap empty space for slide options
       </button>
       <div class={["max-w-5xl mx-auto w-full", @busy && "pointer-events-none opacity-60"]}>
         <.block
@@ -239,6 +249,7 @@ defmodule UitstallingWeb.DeckComponents do
           sz={@sz}
           edit={@edit}
           print={@print}
+          light={@light}
           index={@index}
           busy_blocks={@busy_blocks}
           muted={@muted}
@@ -296,7 +307,7 @@ defmodule UitstallingWeb.DeckComponents do
         class={[
           "relative rounded-lg transition",
           @edit && !@busy &&
-            "outline outline-1 outline-dashed outline-zinc-400/50 hover:outline-amber-400/80 hover:bg-zinc-400/10 cursor-pointer"
+            "outline outline-1 outline-dashed outline-zinc-400/50 hover:outline-(--ui-a4)/80 hover:bg-zinc-400/10 cursor-pointer"
         ]}
         phx-click={@edit && !@busy && "select_block"}
         phx-value-index={@index}
@@ -317,8 +328,8 @@ defmodule UitstallingWeb.DeckComponents do
   defp busy_overlay(assigns) do
     ~H"""
     <div class="absolute inset-0 z-20 flex items-center justify-center cursor-wait rounded-lg bg-zinc-950/60">
-      <div class="flex items-center gap-3 font-mono text-sm text-amber-400 bg-zinc-900/90 ring-1 ring-amber-500/40 rounded-full px-5 py-2.5">
-        <span class="inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></span>
+      <div class="flex items-center gap-3 font-mono text-sm text-(--ui-a4) bg-zinc-900/90 ring-1 ring-(--ui-a5)/40 rounded-full px-5 py-2.5">
+        <span class="inline-block w-4 h-4 border-2 border-(--ui-a4) border-t-transparent rounded-full animate-spin"></span>
         generating…
       </div>
     </div>
@@ -495,24 +506,46 @@ defmodule UitstallingWeb.DeckComponents do
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
-    <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="rows">
-      <div class="overflow-x-auto">
-        <table class="w-full text-lg">
-          <thead>
-            <tr class={["border-b border-zinc-700 font-mono text-sm text-left", @kicker_class]}>
-              <th :for={col <- @f["columns"]} class="py-4 pr-6 font-normal">{col}</th>
-            </tr>
-          </thead>
-          <tbody class={@muted}>
-            <tr :for={row <- @f["rows"]} class="border-b border-zinc-800">
-              <td :for={cell <- row} class={["py-6 pr-6 align-top", cell_tint(cell)]}>
-                <.inline text={cell_text(cell)} accent_class={@accent_class} />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </.block>
+    <%!-- Rows are direct click targets (block divs can't nest in <table>
+         markup): the header row edits "columns", each body row "rows.N" --%>
+    <div class="overflow-x-auto">
+      <table class="w-full text-lg">
+        <thead>
+          <tr
+            class={[
+              "border-b border-zinc-700 font-mono text-sm text-left",
+              @kicker_class,
+              @edit &&
+                "cursor-pointer outline outline-1 outline-dashed outline-zinc-400/50 hover:outline-(--ui-a4)/80"
+            ]}
+            phx-click={@edit && "select_block"}
+            phx-value-index={@index}
+            phx-value-block="columns"
+            title={@edit && "edit columns"}
+          >
+            <th :for={col <- @f["columns"]} class="py-4 pr-6 font-normal">{col}</th>
+          </tr>
+        </thead>
+        <tbody class={@muted}>
+          <tr
+            :for={{row, ri} <- Enum.with_index(@f["rows"])}
+            class={[
+              "border-b border-zinc-800",
+              @edit &&
+                "cursor-pointer outline outline-1 outline-dashed outline-zinc-400/50 hover:outline-(--ui-a4)/80"
+            ]}
+            phx-click={@edit && "select_block"}
+            phx-value-index={@index}
+            phx-value-block={"rows.#{ri}"}
+            title={@edit && "edit this row"}
+          >
+            <td :for={cell <- row} class={["py-6 pr-6 align-top", cell_tint(cell, @light)]}>
+              <.inline text={cell_text(cell)} accent_class={@accent_class} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     """
   end
 
@@ -621,6 +654,8 @@ defmodule UitstallingWeb.DeckComponents do
   end
 
   defp asset_image(assigns) do
+    assigns = assign(assigns, :crop_style, crop_style(assigns.image["crop"]))
+
     ~H"""
     <figure class={[
       "mt-12",
@@ -628,15 +663,16 @@ defmodule UitstallingWeb.DeckComponents do
     ]}>
       <div class={[
         "rounded-lg overflow-hidden ring-1 ring-zinc-800 bg-zinc-900",
-        @image["treatment"] == "full" && "aspect-video"
+        (@image["treatment"] == "full" or @image["crop"]) && "aspect-video"
       ]}>
         <img
           src={"/a/#{@image["asset_id"]}"}
           alt={@image["alt"] || ""}
           loading={if @print, do: "eager", else: "lazy"}
+          style={@crop_style}
           class={[
             "w-full",
-            if(@image["treatment"] == "full",
+            if(@image["crop"] || @image["treatment"] == "full",
               do: "h-full object-cover",
               else: "max-h-72 object-contain"
             )
@@ -649,6 +685,15 @@ defmodule UitstallingWeb.DeckComponents do
     </figure>
     """
   end
+
+  # Pan/zoom crop from three validated numbers — the style string is built
+  # HERE from bounded numerics, deck JSON never carries CSS.
+  defp crop_style(%{"x" => x, "y" => y, "zoom" => zoom})
+       when is_number(x) and is_number(y) and is_number(zoom) do
+    "object-position: #{x}% #{y}%; transform: scale(#{zoom}); transform-origin: #{x}% #{y}%"
+  end
+
+  defp crop_style(_crop), do: nil
 
   # ----- Flow sub-components --------------------------------------------------
 
@@ -694,8 +739,11 @@ defmodule UitstallingWeb.DeckComponents do
   defp cell_text(cell) when is_binary(cell), do: cell
   defp cell_text(%{"text" => text}), do: text
 
-  defp cell_tint(%{"tint" => tint}), do: @tints[tint]
-  defp cell_tint(_cell), do: nil
+  defp cell_tint(%{"tint" => tint}, light) do
+    if light, do: @tints_light[tint], else: @tints[tint]
+  end
+
+  defp cell_tint(_cell, _light), do: nil
 
   # ----- Inline mini-markup -----------------------------------------------------
   #

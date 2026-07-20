@@ -33,11 +33,39 @@ defmodule UitstallingWeb.DeckLiveTest do
     assert length(deck_on_disk()["slides"]) == 11
   end
 
-  test "pdf button on a video-free deck goes straight to the download", %{conn: conn} do
+  test "pdf export runs in the background and hands the browser a one-shot token",
+       %{conn: conn} do
     # The demo deck's media slide is an image — no video, no modal
     {:ok, view, _html} = live(conn, "/deck/demo")
 
-    assert {:error, {:redirect, %{to: "/deck/demo/pdf"}}} = render_hook(view, "open_pdf", %{})
+    assert render_hook(view, "open_pdf", %{}) =~ "preparing…"
+    render_async(view)
+
+    assert_push_event(view, "trigger_download", %{url: "/pdf/" <> token})
+    refute render(view) =~ "preparing…"
+
+    # The token serves the file exactly once
+    conn = get(build_conn(), "/pdf/#{token}")
+    assert response(conn, 200) == "%PDF-1.4 fake"
+    assert response_content_type(conn, :pdf)
+    assert [disposition] = get_resp_header(conn, "content-disposition")
+    assert disposition =~ "attachment"
+
+    assert build_conn() |> get("/pdf/#{token}") |> response(404)
+  end
+
+  test "a failed background export surfaces as a dismissible error", %{conn: conn, user: user} do
+    Decks.create_deck!(user.id, "pdf-fail-2", %{
+      "title" => "Doomed",
+      "slides" => [%{"id" => "s0", "layout" => "statement", "body" => "hi"}]
+    })
+
+    {:ok, view, _html} = live(conn, "/deck/pdf-fail-2")
+    render_hook(view, "open_pdf", %{})
+    render_async(view)
+
+    assert render(view) =~ "PDF failed"
+    refute render_hook(view, "dismiss_pdf_error", %{}) =~ "PDF failed"
   end
 
   test "pdf button on a deck with video warns before downloading", %{conn: conn, user: user} do
@@ -59,9 +87,14 @@ defmodule UitstallingWeb.DeckLiveTest do
     html = render_hook(view, "open_pdf", %{})
     assert html =~ "DOWNLOAD AS PDF"
     assert html =~ "can&#39;t play video"
-    assert html =~ "/deck/vid/pdf"
 
     refute render_hook(view, "close_pdf", %{}) =~ "DOWNLOAD AS PDF"
+
+    # Confirming starts the background export
+    render_hook(view, "open_pdf", %{})
+    render_hook(view, "start_pdf", %{})
+    render_async(view)
+    assert_push_event(view, "trigger_download", %{url: "/pdf/" <> _token})
   end
 
   test "add_slide inserts a placeholder after the selected slide and opens its editor",
@@ -120,6 +153,176 @@ defmodule UitstallingWeb.DeckLiveTest do
     refute Enum.find(requests, &(&1["prompt"] =~ "another")) |> Map.has_key?("model")
   end
 
+  test "table rows edit cell by cell, preserving tints", %{conn: conn} do
+    index = Enum.find_index(deck_on_disk()["slides"], &(&1["layout"] == "table"))
+    original_row = deck_on_disk()["slides"] |> Enum.at(index) |> Map.fetch!("rows") |> hd()
+    assert Enum.any?(original_row, &match?(%{"tint" => _}, &1))
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => index, "block" => "rows.0"})
+
+    # One field per column
+    assert render(view) =~ "cell_0"
+
+    render_hook(view, "save_text", %{
+      "cell_0" => "AAA",
+      "cell_1" => "BBB",
+      "cell_2" => "CCC",
+      "cell_3" => "DDD"
+    })
+
+    row = deck_on_disk()["slides"] |> Enum.at(index) |> Map.fetch!("rows") |> hd()
+
+    texts =
+      Enum.map(row, fn
+        %{"text" => t} -> t
+        t -> t
+      end)
+
+    assert texts == ~w(AAA BBB CCC DDD)
+    # Structured cells kept their tints
+    assert Enum.count(row, &match?(%{"tint" => _}, &1)) ==
+             Enum.count(original_row, &match?(%{"tint" => _}, &1))
+  end
+
+  test "table headers edit as one item per line", %{conn: conn} do
+    index = Enum.find_index(deck_on_disk()["slides"], &(&1["layout"] == "table"))
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => index, "block" => "columns"})
+    render_hook(view, "save_text", %{"value" => "One\nTwo\nThree\nFour"})
+
+    assert deck_on_disk()["slides"] |> Enum.at(index) |> Map.fetch!("columns") ==
+             ~w(One Two Three Four)
+  end
+
+  test "empty-space clicks open slide options only in edit mode", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+
+    # Not editing: ignored
+    render_hook(view, "select_slide_bg", %{"index" => 0})
+    refute render(view) =~ "EDIT SLIDE 1"
+
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide_bg", %{"index" => 0})
+    assert render(view) =~ "EDIT SLIDE 1"
+  end
+
+  test "image regen sends the current image as reference by default", %{conn: conn} do
+    raw =
+      put_in(
+        deck_on_disk(),
+        ["slides", Access.at(0), "image"],
+        %{"asset_id" => "ast_0123456789abcdef"}
+      )
+
+    Decks.save!("demo", raw)
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+
+    # No use_reference param at all (fresh form) — reference rides along
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+    render_hook(view, "queue_image_gen", %{"prompt" => "same but bolder"})
+
+    # Explicitly unticked — no reference
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+
+    render_hook(view, "queue_image_gen", %{
+      "prompt" => "something new",
+      "use_reference" => "false"
+    })
+
+    requests = Enum.filter(Decks.open_requests(), &(&1["type"] == "asset"))
+
+    assert %{"reference_asset_id" => "ast_0123456789abcdef"} =
+             Enum.find(requests, &(&1["prompt"] =~ "bolder"))
+
+    refute Enum.find(requests, &(&1["prompt"] =~ "something new"))
+           |> Map.has_key?("reference_asset_id")
+  end
+
+  test "set_tone recolours one slide only", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 1})
+    render_hook(view, "set_tone", %{"tone" => "accent"})
+
+    slides = deck_on_disk()["slides"]
+    assert Enum.at(slides, 1)["tone"] == "accent"
+    refute Enum.at(slides, 0)["tone"] == "accent"
+
+    # Junk tones are a no-op
+    render_hook(view, "select_slide", %{"index" => 1})
+    render_hook(view, "set_tone", %{"tone" => "hotdog"})
+    assert Enum.at(deck_on_disk()["slides"], 1)["tone"] == "accent"
+  end
+
+  test "saving the image editor persists a crop; reset drops it", %{conn: conn} do
+    # An image part references an asset by id shape only — no upload needed
+    raw =
+      put_in(
+        deck_on_disk(),
+        ["slides", Access.at(0), "image"],
+        %{"asset_id" => "ast_0123456789abcdef"}
+      )
+
+    Decks.save!("demo", raw)
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+
+    render_hook(view, "save_image", %{
+      "alt" => "",
+      "crop_x" => "30",
+      "crop_y" => "62.5",
+      "crop_zoom" => "2"
+    })
+
+    assert %{"crop" => %{"x" => 30.0, "y" => 62.5, "zoom" => 2.0}} =
+             get_in(deck_on_disk(), ["slides", Access.at(0), "image"])
+
+    # Centered zoom-1 is "no crop" — saving it drops the key
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+
+    render_hook(view, "save_image", %{
+      "alt" => "",
+      "crop_x" => "50",
+      "crop_y" => "50",
+      "crop_zoom" => "1"
+    })
+
+    refute get_in(deck_on_disk(), ["slides", Access.at(0), "image"])
+           |> Map.has_key?("crop")
+  end
+
+  test "an empty media frame converts to a text slide, keeping its words", %{conn: conn} do
+    raw =
+      put_in(deck_on_disk(), ["slides", Access.at(1)], %{
+        "id" => "s1",
+        "layout" => "media",
+        "kind" => "image",
+        "heading" => "Watch this",
+        "caption" => "a demo we never found"
+      })
+
+    Decks.save!("demo", raw)
+
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 1})
+    render_hook(view, "remove_media_frame", %{})
+
+    slide = Enum.at(deck_on_disk()["slides"], 1)
+    assert slide["layout"] == "statement"
+    assert slide["body"] == "a demo we never found"
+    assert slide["heading"] == "Watch this"
+    refute Map.has_key?(slide, "kind")
+  end
+
   test "set_theme restyles in place with the paired accent, undo-able", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/deck/demo")
     render_hook(view, "toggle_edit", %{})
@@ -127,6 +330,8 @@ defmodule UitstallingWeb.DeckLiveTest do
 
     assert deck_on_disk()["theme"] == "blush"
     assert deck_on_disk()["accent"] == "rose"
+    # The edit chrome follows the deck accent
+    assert render(view) =~ ~s(data-ui-accent="rose")
 
     # An unknown theme is a no-op
     render_hook(view, "set_theme", %{"theme" => "vantablack"})
@@ -200,10 +405,10 @@ defmodule UitstallingWeb.DeckLiveTest do
 
   test "clicking a block opens direct text editing with the current value", %{conn: conn} do
     {:ok, view, html} = live(conn, "/deck/demo")
-    refute html =~ "click a part to edit"
+    refute html =~ "tap any part to edit"
 
     view |> element("button", "✎ edit") |> render_click()
-    assert render(view) =~ "click a part to edit"
+    assert render(view) =~ "tap any part to edit"
 
     view |> element("#slide-5 [phx-value-block='code']") |> render_click()
     html = render(view)
@@ -266,10 +471,10 @@ defmodule UitstallingWeb.DeckLiveTest do
     {:ok, view, _html} = live(conn, "/deck/demo")
 
     view |> element("button", "✎ edit") |> render_click()
-    view |> element("#slide-6 [phx-value-block='rows']") |> render_click()
+    view |> element("#slide-6 [phx-value-block='rows.0']") |> render_click()
 
-    # Table rows are agent-only: no direct edit form
-    refute render(view) =~ "form phx-submit=\"save_text\""
+    # Rows edit directly now — the agent form still rides below it
+    assert render(view) =~ "cell_0"
 
     view
     |> element("form[phx-submit='queue_edit']")
@@ -281,7 +486,7 @@ defmodule UitstallingWeb.DeckLiveTest do
 
     [request] = Decks.pending_requests()
     assert request["slide_id"] == "s6"
-    assert request["block"] == "rows"
+    assert request["block"] == "rows.0"
     assert request["prompt"] == "reword this table in layman's terms"
     assert request["status"] == "pending"
   end

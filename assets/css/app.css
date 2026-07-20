@@ -103,3 +103,32 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+/* Deck edit chrome follows the deck's accent — #deck carries
+   data-ui-accent, and every control uses text-(--ui-a4) / bg-(--ui-a5)
+   style utilities instead of hardcoded amber. Values resolve at build time
+   to the same palette the slide renderer uses. */
+[data-ui-accent] {
+  --ui-a4: theme(--color-amber-400);
+  --ui-a5: theme(--color-amber-500);
+}
+[data-ui-accent="sky"] {
+  --ui-a4: theme(--color-sky-400);
+  --ui-a5: theme(--color-sky-500);
+}
+[data-ui-accent="emerald"] {
+  --ui-a4: theme(--color-emerald-400);
+  --ui-a5: theme(--color-emerald-500);
+}
+[data-ui-accent="rose"] {
+  --ui-a4: theme(--color-rose-400);
+  --ui-a5: theme(--color-rose-500);
+}
+[data-ui-accent="violet"] {
+  --ui-a4: theme(--color-violet-400);
+  --ui-a5: theme(--color-violet-500);
+}
+[data-ui-accent="cyan"] {
+  --ui-a4: theme(--color-cyan-400);
+  --ui-a5: theme(--color-cyan-500);
+}

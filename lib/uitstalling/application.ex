@@ -15,7 +15,9 @@ defmodule Uitstalling.Application do
         {Phoenix.PubSub, name: Uitstalling.PubSub},
         # Per-deck request workers, started on demand via DeckWorker.kick/1
         {Registry, keys: :unique, name: Uitstalling.Decks.Registry},
-        {DynamicSupervisor, name: Uitstalling.Decks.WorkerSupervisor, strategy: :one_for_one}
+        {DynamicSupervisor, name: Uitstalling.Decks.WorkerSupervisor, strategy: :one_for_one},
+        # Token → generated-PDF handoff between LiveView and the download route
+        Uitstalling.Decks.PdfStore
       ] ++
         chromic_child() ++
         boot_drain_child() ++

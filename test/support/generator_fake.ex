@@ -20,8 +20,10 @@ defmodule Uitstalling.Assets.Generator.Fake do
     {:error, {:http_error, :timeout}}
   end
 
-  # The chosen model rides along in the bytes so tests can assert on it.
+  # The chosen model (and whether a reference image arrived) ride along in
+  # the bytes so tests can assert on them.
   def generate(prompt, opts) do
-    {:ok, %{bytes: @png_header <> "#{opts[:model]}|" <> prompt, content_type: "image/png"}}
+    ref = if opts[:reference], do: "ref|", else: ""
+    {:ok, %{bytes: @png_header <> "#{opts[:model]}|" <> ref <> prompt, content_type: "image/png"}}
   end
 end

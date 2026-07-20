@@ -7,6 +7,8 @@ defmodule UitstallingWeb.DeckLive do
 
   import UitstallingWeb.DeckComponents
 
+  require Logger
+
   @undo_depth 20
 
   # Swatches for the in-place theme switcher. Literal classes (Tailwind),
@@ -98,6 +100,8 @@ defmodule UitstallingWeb.DeckLive do
           edit_form: %{},
           regen: nil,
           pdf_modal: false,
+          pdf_busy: false,
+          pdf_error: nil,
           theme_panel: false,
           theme_swatches: @theme_swatches,
           undo: [],
@@ -142,7 +146,7 @@ defmodule UitstallingWeb.DeckLive do
 
   def render(assigns) do
     ~H"""
-    <main id="deck" phx-hook=".DeckNav">
+    <main id="deck" phx-hook=".DeckNav" data-ui-accent={@deck.accent || "amber"}>
       <%!-- Keyed by slide id: an insert/delete moves DOM nodes instead of
            rewriting every following slide in place — which also keeps the
            browser's scroll anchored to the slide you're actually on. --%>
@@ -159,14 +163,27 @@ defmodule UitstallingWeb.DeckLive do
       <div class="fixed bottom-4 right-6 flex items-center gap-3">
         <button
           phx-click="open_pdf"
-          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition flex items-center gap-1.5"
+          disabled={@pdf_busy}
+          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition flex items-center gap-1.5 disabled:opacity-60"
           title="download this presentation as a PDF backup"
         >
-          <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5" /> pdf
+          <span
+            :if={@pdf_busy}
+            class="inline-block w-3 h-3 border-2 border-(--ui-a4) border-t-transparent rounded-full animate-spin"
+          ></span>
+          <.icon :if={!@pdf_busy} name="hero-arrow-down-tray" class="w-3.5 h-3.5" />
+          {if @pdf_busy, do: "preparing…", else: "pdf"}
         </button>
+        <span
+          :if={@pdf_error}
+          class="font-mono text-xs bg-red-950/95 text-red-200 ring-1 ring-red-800 rounded px-3 py-1.5 flex items-center gap-2"
+        >
+          ⚠ {@pdf_error}
+          <button phx-click="dismiss_pdf_error" class="text-red-400 hover:text-red-100">✕</button>
+        </span>
         <.link
           navigate={@remote_path}
-          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition flex items-center gap-1.5"
+          class="font-mono text-xs text-zinc-400 bg-zinc-900/80 px-3 py-1.5 rounded ring-1 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition flex items-center gap-1.5"
           title="open the phone remote for this presentation"
         >
           <.icon name="hero-device-phone-mobile" class="w-3.5 h-3.5" /> remote
@@ -178,17 +195,17 @@ defmodule UitstallingWeb.DeckLive do
              8 = ∞ on its side; "stal" from uit-STAL-ling. Workshop freely. --%>
         <.link
           navigate={~p"/"}
-          class="font-mono text-xs text-zinc-500 bg-zinc-900/80 px-3 py-1.5 rounded hover:text-amber-400 transition"
+          class="font-mono text-xs text-zinc-500 bg-zinc-900/80 px-3 py-1.5 rounded hover:text-(--ui-a4) transition"
           title="Made with UIT"
         >
-          <span class="text-amber-400 font-bold">8</span>stal
+          <span class="text-(--ui-a4) font-bold">8</span>stal
         </.link>
       </div>
 
       <div class="fixed bottom-4 left-6 flex items-center gap-2">
         <.link
           navigate={~p"/"}
-          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
+          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) transition"
         >
           ← decks
         </.link>
@@ -198,8 +215,8 @@ defmodule UitstallingWeb.DeckLive do
           class={[
             "font-mono text-sm px-4 py-2 rounded-lg ring-1 transition",
             if(@edit_mode,
-              do: "bg-amber-500 text-zinc-950 ring-amber-400 font-bold",
-              else: "bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400"
+              do: "bg-(--ui-a5) text-zinc-950 ring-(--ui-a4) font-bold",
+              else: "bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4)"
             )
           ]}
         >
@@ -207,9 +224,9 @@ defmodule UitstallingWeb.DeckLive do
         </button>
         <span
           :if={@pending != []}
-          class="font-mono text-xs text-amber-400 bg-zinc-900/80 px-3 py-1.5 rounded flex items-center gap-2"
+          class="font-mono text-xs text-(--ui-a4) bg-zinc-900/80 px-3 py-1.5 rounded flex items-center gap-2"
         >
-          <span class="inline-block w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></span>
+          <span class="inline-block w-3 h-3 border-2 border-(--ui-a4) border-t-transparent rounded-full animate-spin"></span>
           {length(@pending)} generating
           <button
             :for={req <- @pending}
@@ -233,14 +250,14 @@ defmodule UitstallingWeb.DeckLive do
         <button
           phx-click="open_theme"
           title="change theme"
-          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
         >
           <.icon name="hero-swatch" class="w-5 h-5" />
         </button>
         <button
           phx-click="open_regen"
           title="regenerate deck"
-          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
         >
           <.icon name="hero-arrow-path" class="w-5 h-5" />
         </button>
@@ -248,7 +265,7 @@ defmodule UitstallingWeb.DeckLive do
           :if={@undo != []}
           phx-click="undo"
           title={"undo (#{length(@undo)})"}
-          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
         >
           <.icon name="hero-arrow-uturn-left" class="w-5 h-5" />
         </button>
@@ -259,10 +276,11 @@ defmodule UitstallingWeb.DeckLive do
         class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6"
       >
         <div class="w-full max-w-md bg-zinc-900 ring-1 ring-zinc-700 rounded-xl p-6">
-          <p class="font-mono text-amber-400 text-xs tracking-wider mb-4">THEME</p>
+          <p class="font-mono text-(--ui-a4) text-xs tracking-wider mb-4">DECK THEME</p>
           <p class="text-zinc-400 text-sm mb-5">
-            Restyles the deck in place — content untouched, and ↶ undo brings
-            the old look back.
+            Restyles <strong class="text-zinc-200">every slide in the deck</strong>
+            — content untouched, ↶ undo brings the old look back. For one
+            slide's colour, use SLIDE TONE in that slide's options instead.
           </p>
           <div class="grid grid-cols-5 gap-3">
             <button
@@ -275,7 +293,7 @@ defmodule UitstallingWeb.DeckLive do
                 "w-12 h-12 rounded-lg ring-2 transition",
                 swatch,
                 if((@deck.theme || "noir") == id,
-                  do: "ring-amber-400",
+                  do: "ring-(--ui-a4)",
                   else: "ring-zinc-700 hover:ring-zinc-500"
                 )
               ]}></span>
@@ -332,7 +350,7 @@ defmodule UitstallingWeb.DeckLive do
         class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6"
       >
         <div class="w-full max-w-md bg-zinc-900 ring-1 ring-zinc-700 rounded-xl p-6">
-          <p class="font-mono text-amber-400 text-xs tracking-wider mb-4">DOWNLOAD AS PDF</p>
+          <p class="font-mono text-(--ui-a4) text-xs tracking-wider mb-4">DOWNLOAD AS PDF</p>
           <p class="text-zinc-300 text-sm leading-relaxed">
             This deck has video on it. A PDF can't play video, so those slides
             get a still placeholder card instead — everything else comes along
@@ -345,15 +363,12 @@ defmodule UitstallingWeb.DeckLive do
             >
               Cancel
             </button>
-            <%!-- phx-click only closes the modal — the anchor's default
-                 navigation still fires and pulls the download. --%>
-            <a
-              href={~p"/deck/#{@deck_id}/pdf"}
-              phx-click="close_pdf"
-              class="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+            <button
+              phx-click="start_pdf"
+              class="px-5 py-2.5 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
             >
               Download PDF
-            </a>
+            </button>
           </div>
         </div>
       </div>
@@ -363,8 +378,8 @@ defmodule UitstallingWeb.DeckLive do
         class="fixed inset-0 z-[60] bg-zinc-950/95 flex items-center justify-center"
       >
         <div class="flex flex-col items-center gap-6 text-center px-8">
-          <span class="inline-block w-12 h-12 border-4 border-amber-400 border-t-transparent rounded-full animate-spin"></span>
-          <p class="font-mono text-amber-400 text-lg">generating your presentation…</p>
+          <span class="inline-block w-12 h-12 border-4 border-(--ui-a4) border-t-transparent rounded-full animate-spin"></span>
+          <p class="font-mono text-(--ui-a4) text-lg">generating your presentation…</p>
           <p class="text-zinc-500 text-sm max-w-sm">
             This page updates itself the moment it's ready — usually under a minute.
           </p>
@@ -390,6 +405,29 @@ defmodule UitstallingWeb.DeckLive do
               const el = document.getElementById(`slide-${index}`)
               if (el) el.scrollIntoView({behavior: "smooth"})
             })
+
+            // Background-generated PDF is ready — pull it through a real
+            // anchor click so it lands in the browser's download manager
+            this.handleEvent("trigger_download", ({url}) => {
+              const a = document.createElement("a")
+              a.href = url
+              a.download = ""
+              document.body.appendChild(a)
+              a.click()
+              a.remove()
+            })
+
+            // Empty slide space opens the slide's options (edit mode only —
+            // the server ignores it otherwise). Clicks that belong to a
+            // block, control, or overlay are left alone.
+            this.onBgClick = (e) => {
+              const section = e.target.closest("section[data-slide-id]")
+              if (!section) return
+              if (e.target.closest("[phx-value-block], button, a, form, input, textarea, select, label")) return
+              const index = parseInt(section.id.replace("slide-", ""), 10)
+              this.pushEvent("select_slide_bg", {index})
+            }
+            this.el.addEventListener("click", this.onBgClick)
           },
           destroyed() {
             window.removeEventListener("keydown", this.onKey)
@@ -425,7 +463,7 @@ defmodule UitstallingWeb.DeckLive do
     ~H"""
     <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6">
       <div class="w-full max-w-xl bg-zinc-900 ring-1 ring-zinc-700 rounded-xl max-h-[90dvh] flex flex-col overflow-hidden">
-        <p class="font-mono text-amber-400 text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
+        <p class="font-mono text-(--ui-a4) text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
           EDIT SLIDE {@selected.index + 1} · {@slide.layout}
           <span :if={@selected.block} class="text-zinc-400">· {@selected.block}</span>
         </p>
@@ -475,8 +513,241 @@ defmodule UitstallingWeb.DeckLive do
                 type="text"
                 name="alt"
                 value={@edit_form["alt"] || (@value && @value["alt"])}
-                class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+                class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-3 font-sans"
               />
+
+              <div :if={@value} class="mt-4">
+                <p class="font-mono text-zinc-500 text-xs mb-1">
+                  CROP &amp; ZOOM — drag to reposition · pull a corner in to crop
+                  tighter · slide to zoom
+                </p>
+                <div
+                  id="crop-preview"
+                  phx-hook=".ImageCrop"
+                  phx-update="ignore"
+                  data-x={crop_part(@value, "x")}
+                  data-y={crop_part(@value, "y")}
+                  data-zoom={crop_part(@value, "zoom")}
+                  class="relative aspect-video rounded-lg overflow-hidden ring-1 ring-zinc-700 bg-zinc-950 cursor-move select-none touch-none"
+                >
+                  <img
+                    src={"/a/#{@value["asset_id"]}"}
+                    class="w-full h-full object-cover pointer-events-none"
+                    draggable="false"
+                  />
+                  <%!-- 16:9-locked selection rect; the hook owns geometry --%>
+                  <div
+                    id="crop-rect"
+                    class="absolute inset-0 border-2 border-dashed border-white/70"
+                    style="pointer-events: none"
+                  >
+                    <span
+                      :for={
+                        {corner, pos, cursor} <- [
+                          {"nw", "-top-1.5 -left-1.5", "cursor-nwse-resize"},
+                          {"ne", "-top-1.5 -right-1.5", "cursor-nesw-resize"},
+                          {"sw", "-bottom-1.5 -left-1.5", "cursor-nesw-resize"},
+                          {"se", "-bottom-1.5 -right-1.5", "cursor-nwse-resize"}
+                        ]
+                      }
+                      data-corner={corner}
+                      class={[
+                        "absolute w-3.5 h-3.5 bg-white rounded-sm ring-1 ring-zinc-500",
+                        pos,
+                        cursor
+                      ]}
+                      style="pointer-events: auto"
+                    ></span>
+                  </div>
+                </div>
+                <div class="mt-2 flex items-center gap-3">
+                  <input
+                    type="range"
+                    id="crop-zoom-slider"
+                    min="1"
+                    max="4"
+                    step="0.05"
+                    value={crop_part(@value, "zoom")}
+                    class="flex-1 accent-(--ui-a5)"
+                  />
+                  <button
+                    type="button"
+                    id="crop-apply"
+                    hidden
+                    class="font-mono text-xs px-3 py-1.5 rounded bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
+                  >
+                    ✓ crop to selection
+                  </button>
+                  <button
+                    type="button"
+                    id="crop-reset"
+                    class="font-mono text-xs text-zinc-500 hover:text-(--ui-a4)"
+                  >
+                    reset
+                  </button>
+                </div>
+                <input type="hidden" name="crop_x" id="crop-x" value={crop_part(@value, "x")} />
+                <input type="hidden" name="crop_y" id="crop-y" value={crop_part(@value, "y")} />
+                <input
+                  type="hidden"
+                  name="crop_zoom"
+                  id="crop-zoom"
+                  value={crop_part(@value, "zoom")}
+                />
+              </div>
+
+              <script :type={Phoenix.LiveView.ColocatedHook} name=".ImageCrop">
+                export default {
+                  mounted() {
+                    this.img = this.el.querySelector("img")
+                    this.rectEl = this.el.querySelector("#crop-rect")
+                    this.x = parseFloat(this.el.dataset.x)
+                    this.y = parseFloat(this.el.dataset.y)
+                    this.zoom = parseFloat(this.el.dataset.zoom)
+                    // Selection rect as frame fractions; 16:9-locked so one
+                    // width doubles as its height
+                    this.sel = {left: 0, top: 0, w: 1}
+                    this.apply()
+
+                    this.el.addEventListener("pointerdown", (e) => {
+                      const corner = e.target.dataset && e.target.dataset.corner
+                      const frame = this.el.getBoundingClientRect()
+                      if (corner) {
+                        // Resize anchored at the opposite corner
+                        const ax = corner.includes("w") ? this.sel.left + this.sel.w : this.sel.left
+                        const ay = corner.includes("n") ? this.sel.top + this.sel.w : this.sel.top
+                        this.drag = {mode: "resize", ax, ay, frame}
+                      } else if (this.sel.w < 1 && this.inSel(e, frame)) {
+                        this.drag = {mode: "move", sx: e.clientX, sy: e.clientY, left: this.sel.left, top: this.sel.top, frame}
+                      } else {
+                        this.drag = {mode: "pan", sx: e.clientX, sy: e.clientY, x: this.x, y: this.y, frame}
+                      }
+                      this.el.setPointerCapture(e.pointerId)
+                      e.preventDefault()
+                    })
+
+                    this.el.addEventListener("pointermove", (e) => {
+                      if (!this.drag) return
+                      const d = this.drag, frame = d.frame
+
+                      if (d.mode === "pan") {
+                        this.x = this.clamp(d.x - ((e.clientX - d.sx) / frame.width) * 100 / this.zoom)
+                        this.y = this.clamp(d.y - ((e.clientY - d.sy) / frame.height) * 100 / this.zoom)
+                        this.apply()
+                      } else if (d.mode === "resize") {
+                        const cx = (e.clientX - frame.left) / frame.width
+                        const cy = (e.clientY - frame.top) / frame.height
+                        const sx = cx < d.ax ? -1 : 1
+                        const sy = cy < d.ay ? -1 : 1
+                        const avail = Math.min(sx > 0 ? 1 - d.ax : d.ax, sy > 0 ? 1 - d.ay : d.ay)
+                        const w = Math.min(Math.max(Math.max(Math.abs(cx - d.ax), Math.abs(cy - d.ay)), 0.15), avail)
+                        this.sel = {left: sx > 0 ? d.ax : d.ax - w, top: sy > 0 ? d.ay : d.ay - w, w}
+                        this.drawSel()
+                      } else if (d.mode === "move") {
+                        this.sel.left = Math.min(Math.max(d.left + (e.clientX - d.sx) / frame.width, 0), 1 - this.sel.w)
+                        this.sel.top = Math.min(Math.max(d.top + (e.clientY - d.sy) / frame.height, 0), 1 - this.sel.w)
+                        this.drawSel()
+                      }
+                    })
+
+                    this.el.addEventListener("pointerup", () => {
+                      if (this.drag && this.drag.mode === "pan") this.sync()
+                      this.drag = null
+                    })
+
+                    document.getElementById("crop-zoom-slider").addEventListener("input", (e) => {
+                      this.zoom = parseFloat(e.target.value)
+                      this.apply()
+                      this.sync()
+                    })
+                    document.getElementById("crop-apply").addEventListener("click", () => this.applySel())
+                    document.getElementById("crop-reset").addEventListener("click", () => {
+                      this.x = 50; this.y = 50; this.zoom = 1
+                      this.resetSel()
+                      this.apply()
+                      this.sync()
+                    })
+                  },
+
+                  inSel(e, frame) {
+                    const fx = (e.clientX - frame.left) / frame.width
+                    const fy = (e.clientY - frame.top) / frame.height
+                    return fx >= this.sel.left && fx <= this.sel.left + this.sel.w &&
+                      fy >= this.sel.top && fy <= this.sel.top + this.sel.w
+                  },
+
+                  // Zoom into the selected sub-rect of the CURRENT view.
+                  // Per axis with object-position P (fraction) and coverage
+                  // k = zoom * rendered/frame: visible window starts at
+                  // P(k-1)/k, so the new P solves P'(k'-1)/k' = old window
+                  // start + rect offset / k, with k' = k / w.
+                  applySel() {
+                    const {left, top, w} = this.sel
+                    if (w >= 0.999) return
+                    const frame = this.el.getBoundingClientRect()
+                    const imgAR = this.img.naturalWidth / this.img.naturalHeight
+                    const frameAR = frame.width / frame.height
+                    const kx = this.zoom * Math.max(1, imgAR / frameAR)
+                    const ky = this.zoom * Math.max(1, frameAR / imgAR)
+
+                    const zTarget = Math.min(this.zoom / w, 4)
+                    // If zoom clamps, keep the selection's center instead
+                    const wEff = this.zoom / zTarget
+                    const a = Math.min(Math.max(left + w / 2 - wEff / 2, 0), 1 - wEff)
+                    const b = Math.min(Math.max(top + w / 2 - wEff / 2, 0), 1 - wEff)
+
+                    const newP = (P, k, offset) =>
+                      Math.abs(k - wEff) < 1e-6 ? 50 : this.clamp(((P / 100) * (k - 1) + offset) / (k - wEff) * 100)
+
+                    this.x = newP(this.x, kx, a)
+                    this.y = newP(this.y, ky, b)
+                    this.zoom = zTarget
+                    document.getElementById("crop-zoom-slider").value = zTarget
+                    this.resetSel()
+                    this.apply()
+                    this.sync()
+                  },
+
+                  drawSel() {
+                    const {left, top, w} = this.sel
+                    const full = w >= 0.999
+                    Object.assign(this.rectEl.style, {
+                      left: `${left * 100}%`,
+                      top: `${top * 100}%`,
+                      width: `${w * 100}%`,
+                      height: `${w * 100}%`,
+                      inset: "",
+                      pointerEvents: full ? "none" : "auto",
+                      cursor: full ? "" : "move",
+                      boxShadow: full ? "" : "0 0 0 9999px rgba(0,0,0,0.55)"
+                    })
+                    document.getElementById("crop-apply").hidden = full
+                  },
+
+                  resetSel() {
+                    this.sel = {left: 0, top: 0, w: 1}
+                    this.drawSel()
+                  },
+
+                  clamp(v) { return Math.min(100, Math.max(0, v)) },
+
+                  apply() {
+                    this.img.style.objectPosition = `${this.x}% ${this.y}%`
+                    this.img.style.transform = `scale(${this.zoom})`
+                    this.img.style.transformOrigin = `${this.x}% ${this.y}%`
+                  },
+
+                  // Push into the form's hidden inputs so phx-change stores it in
+                  // edit_form and Save persists it
+                  sync() {
+                    for (const [id, v] of [["crop-x", this.x], ["crop-y", this.y], ["crop-zoom", this.zoom]]) {
+                      const input = document.getElementById(id)
+                      input.value = v
+                      input.dispatchEvent(new Event("input", {bubbles: true}))
+                    }
+                  }
+                }
+              </script>
 
               <p class="font-mono text-zinc-500 text-xs mt-4 mb-1">SIZE</p>
               <div class="flex gap-4">
@@ -492,7 +763,7 @@ defmodule UitstallingWeb.DeckLive do
                       (@edit_form["treatment"] || (@value && @value["treatment"]) || "side") ==
                         treatment
                     }
-                    class="text-amber-500 bg-zinc-950 border-zinc-700 focus:ring-amber-500"
+                    class="text-(--ui-a5) bg-zinc-950 border-zinc-700 focus:ring-(--ui-a5)"
                   /> {label}
                 </label>
               </div>
@@ -500,7 +771,7 @@ defmodule UitstallingWeb.DeckLive do
               <div class="sticky bottom-0 mt-4 py-2 bg-zinc-900 flex justify-end">
                 <button
                   type="submit"
-                  class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                  class="px-5 py-2 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
                 >
                   Save image
                 </button>
@@ -510,9 +781,16 @@ defmodule UitstallingWeb.DeckLive do
             <div :if={@kind == :image} class="mt-6 pt-4 border-t border-zinc-800">
               <p class="font-mono text-zinc-500 text-xs mb-2">
                 {cond do
-                  @gen_prompt -> "OR REGENERATE IT — tweak the prompt and go again"
-                  @value -> "OR DESCRIBE A NEW ONE AND GENERATE"
-                  true -> "OR DESCRIBE IT AND GENERATE"
+                  @gen_prompt ->
+                    "OR REGENERATE IT — tweak the prompt and go again"
+
+                  @value ->
+                    "OR PROMPT ON TOP OF IT — the current image rides along as " <>
+                      "reference, so you're generating against it; untick to " <>
+                      "start fresh"
+
+                  true ->
+                    "OR DESCRIBE IT AND GENERATE"
                 end}
               </p>
               <form
@@ -525,12 +803,25 @@ defmodule UitstallingWeb.DeckLive do
                   name="prompt"
                   rows="3"
                   placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
-                  class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+                  class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4 font-sans"
                 >{@edit_form["prompt"] || @gen_prompt}</textarea>
+                <label
+                  :if={@value}
+                  class="mt-3 flex items-center gap-2 font-mono text-sm text-zinc-300 cursor-pointer"
+                >
+                  <input type="hidden" name="use_reference" value="false" />
+                  <input
+                    type="checkbox"
+                    name="use_reference"
+                    value="true"
+                    checked={@edit_form["use_reference"] != "false"}
+                    class="rounded bg-zinc-950 border-zinc-700 text-(--ui-a5) focus:ring-(--ui-a5)"
+                  /> use the current image as reference
+                </label>
                 <p class="font-mono text-zinc-500 text-xs mt-3 mb-1">MODEL</p>
                 <select
                   name="model"
-                  class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-mono text-sm"
+                  class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-3 font-mono text-sm"
                 >
                   {Phoenix.HTML.Form.options_for_select(
                     Uitstalling.Assets.ImageModels.options(),
@@ -540,7 +831,7 @@ defmodule UitstallingWeb.DeckLive do
                 <div class="mt-3 flex justify-end">
                   <button
                     type="submit"
-                    class="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                    class="px-6 py-2.5 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
                   >
                     {if @gen_prompt, do: "Regenerate image", else: "Generate image"}
                   </button>
@@ -563,24 +854,36 @@ defmodule UitstallingWeb.DeckLive do
                     name="value"
                     rows={if @selected.block in ~w(heading kicker), do: 2, else: 4}
                     class={[
-                      "w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4",
+                      "w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4",
                       if(@selected.block == "code", do: "font-mono", else: "font-sans")
                     ]}
                   >{@edit_form["value"] || @value}</textarea>
                 <% :lines -> %>
-                  <p class="font-mono text-zinc-500 text-xs mb-2">ONE BULLET PER LINE</p>
+                  <p class="font-mono text-zinc-500 text-xs mb-2">ONE ITEM PER LINE</p>
                   <textarea
                     name="value"
                     rows="6"
-                    class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+                    class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4 font-sans"
                   >{@edit_form["value"] || Enum.join(@value, "\n")}</textarea>
+                <% :row -> %>
+                  <div
+                    :for={{col, ci} <- Enum.with_index(@slide.fields["columns"] || [])}
+                    class="mb-3"
+                  >
+                    <p class="font-mono text-zinc-500 text-xs mb-1 uppercase">{col}</p>
+                    <textarea
+                      name={"cell_#{ci}"}
+                      rows="2"
+                      class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-3 font-sans"
+                    >{@edit_form["cell_#{ci}"] || row_cell_text(@value, ci)}</textarea>
+                  </div>
                 <% {:map, fields} -> %>
                   <div :for={field <- fields} class="mb-3">
                     <p class="font-mono text-zinc-500 text-xs mb-1 uppercase">{field}</p>
                     <textarea
                       name={field}
                       rows={if field in ~w(body a), do: 3, else: 1}
-                      class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+                      class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-3 font-sans"
                     >{@edit_form[field] || @value[field]}</textarea>
                   </div>
               <% end %>
@@ -590,7 +893,7 @@ defmodule UitstallingWeb.DeckLive do
               <div class="sticky bottom-0 mt-3 py-2 bg-zinc-900 flex justify-end">
                 <button
                   type="submit"
-                  class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+                  class="px-5 py-2 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
                 >
                   Save
                 </button>
@@ -629,7 +932,7 @@ defmodule UitstallingWeb.DeckLive do
                   :for={{label, key} <- @addable}
                   phx-click="add_block"
                   phx-value-key={key}
-                  class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+                  class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
                 >
                   + {label}
                 </button>
@@ -643,13 +946,35 @@ defmodule UitstallingWeb.DeckLive do
               <p class="font-mono text-zinc-500 text-xs mb-2">GROW THE DECK</p>
               <button
                 phx-click="add_slide"
-                class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+                class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) transition"
               >
                 + add a slide after this one
               </button>
               <p class="mt-2 font-mono text-zinc-600 text-xs">
                 opens the new slide's editor — type it exactly, or have the agent write it
               </p>
+            </div>
+
+            <div class="mt-6">
+              <p class="font-mono text-zinc-500 text-xs mb-2">
+                SLIDE TONE — colour for this slide only
+              </p>
+              <div class="flex gap-2">
+                <button
+                  :for={tone <- Decks.tones()}
+                  phx-click="set_tone"
+                  phx-value-tone={tone}
+                  class={[
+                    "px-4 py-2 rounded-lg font-mono text-sm ring-1 transition",
+                    if(@slide.tone == tone,
+                      do: "bg-(--ui-a5) text-zinc-950 ring-(--ui-a4) font-bold",
+                      else: "bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4)"
+                    )
+                  ]}
+                >
+                  {tone}
+                </button>
+              </div>
             </div>
 
             <div class="mt-6">
@@ -662,8 +987,8 @@ defmodule UitstallingWeb.DeckLive do
                   class={[
                     "px-4 py-2 rounded-lg font-mono text-sm ring-1 transition",
                     if(@slide.size == size,
-                      do: "bg-amber-500 text-zinc-950 ring-amber-400 font-bold",
-                      else: "bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400"
+                      do: "bg-(--ui-a5) text-zinc-950 ring-(--ui-a4) font-bold",
+                      else: "bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-(--ui-a4)"
                     )
                   ]}
                 >
@@ -688,7 +1013,7 @@ defmodule UitstallingWeb.DeckLive do
               phx-click="delete"
               class="px-5 py-2.5 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
             >
-              Delete {@selected.block}
+              Delete {block_label(@selected.block)}
             </button>
             <button
               :if={is_nil(@selected.block)}
@@ -696,6 +1021,18 @@ defmodule UitstallingWeb.DeckLive do
               class="px-5 py-2.5 rounded-lg text-red-400 ring-1 ring-red-900 hover:bg-red-950 font-mono text-sm"
             >
               Delete slide
+            </button>
+            <%!-- An empty media frame ("image goes here") is the layout
+                 itself — removing it means becoming a text slide --%>
+            <button
+              :if={
+                is_nil(@selected.block) and @slide.layout == "media" and
+                  is_nil(@slide.fields["src"])
+              }
+              phx-click="remove_media_frame"
+              class="px-5 py-2.5 rounded-lg text-zinc-400 ring-1 ring-zinc-700 hover:text-(--ui-a4) hover:ring-(--ui-a5) font-mono text-sm"
+            >
+              Remove media frame
             </button>
           </div>
           <button
@@ -732,7 +1069,7 @@ defmodule UitstallingWeb.DeckLive do
     ~H"""
     <div class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6">
       <div class="w-full max-w-xl bg-zinc-900 ring-1 ring-zinc-700 rounded-xl max-h-[90dvh] flex flex-col overflow-hidden">
-        <p class="font-mono text-amber-400 text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
+        <p class="font-mono text-(--ui-a4) text-xs tracking-wider px-6 pt-6 pb-4 shrink-0">
           REGENERATE THIS DECK
         </p>
 
@@ -753,7 +1090,7 @@ defmodule UitstallingWeb.DeckLive do
             name="prompt"
             rows="6"
             placeholder="what the talk is about, and the main points to cover"
-            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4 font-sans"
           >{@regen["prompt"]}</textarea>
 
           <p class="font-mono text-zinc-500 text-xs mt-4 mb-2">TONE &amp; AUDIENCE</p>
@@ -762,7 +1099,7 @@ defmodule UitstallingWeb.DeckLive do
             name="voice"
             value={@regen["voice"]}
             placeholder="e.g. sharp and technical, for a security-savvy crowd"
-            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-3 font-sans"
           />
 
           <p class="font-mono text-zinc-500 text-xs mt-4 mb-2">
@@ -773,13 +1110,13 @@ defmodule UitstallingWeb.DeckLive do
             name="research"
             rows="6"
             placeholder="facts, numbers, names and quotes to ground the deck in"
-            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans text-sm"
+            class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4 font-sans text-sm"
           >{@regen["research"]}</textarea>
 
           <div class="sticky bottom-0 mt-4 py-2 bg-zinc-900 flex justify-end">
             <button
               type="submit"
-              class="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+              class="px-6 py-2.5 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
             >
               Regenerate deck
             </button>
@@ -809,12 +1146,12 @@ defmodule UitstallingWeb.DeckLive do
         name="prompt"
         rows="3"
         placeholder={@placeholder}
-        class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
+        class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-(--ui-a5) border-0 p-4 font-sans"
       >{@value}</textarea>
       <div class="mt-3 flex justify-end">
         <button
           type="submit"
-          class="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold"
+          class="px-5 py-2 rounded-lg bg-(--ui-a5) hover:bg-(--ui-a4) text-zinc-950 font-semibold"
         >
           Queue for agent
         </button>
@@ -828,16 +1165,38 @@ defmodule UitstallingWeb.DeckLive do
   defp block_kind(path) do
     case String.split(path, ".") do
       ["image"] -> :image
+      # Whole "columns" is the table's header row (bullets use columns.N)
+      ["columns"] -> :lines
       ["columns", _] -> :lines
       ["points", _] -> {:map, ~w(label body)}
       ["items", _] -> {:map, ~w(q a)}
       ["steps", _] -> {:map, ~w(actor body arrow_label)}
-      # Table cells are structured (string | {text, tint}) — agent territory
-      ["rows", _] -> :agent_only
+      # A table row: one field per column; tints survive text edits
+      ["rows", _] -> :row
       ["rows"] -> :agent_only
       [_scalar] -> :scalar
       # Anything else (incl. depth-3 paths) is edited via the agent for now
       _ -> :agent_only
+    end
+  end
+
+  # Friendlier names for the Delete button ("Delete row 3", not "Delete rows.2")
+  defp block_label(path) do
+    case String.split(path, ".") do
+      ["rows", n] -> "row #{String.to_integer(n) + 1}"
+      ["points", n] -> "point #{String.to_integer(n) + 1}"
+      ["steps", n] -> "step #{String.to_integer(n) + 1}"
+      ["items", n] -> "question #{String.to_integer(n) + 1}"
+      ["columns", n] -> "bullet column #{String.to_integer(n) + 1}"
+      _ -> path
+    end
+  end
+
+  defp row_cell_text(row, ci) do
+    case Enum.at(row || [], ci) do
+      %{"text" => text} -> text
+      cell when is_binary(cell) -> cell
+      _ -> nil
     end
   end
 
@@ -851,28 +1210,38 @@ defmodule UitstallingWeb.DeckLive do
   #
   # Anyone who can view can download. The video check runs here, on click —
   # not on every render: a deck with video gets a heads-up modal (those
-  # slides degrade to a placeholder in the PDF); one without downloads
-  # immediately. The response is an attachment, so the redirect leaves the
-  # LiveView on screen.
+  # slides degrade to a placeholder in the PDF); one without exports
+  # immediately. Generation happens in a background task; the finished PDF
+  # is parked in PdfStore and the browser pulls it by token, so the page
+  # never navigates and the file lands in the download manager.
 
   def handle_event("open_pdf", _params, socket) do
     if Decks.has_video?(socket.assigns.deck) do
       {:noreply, assign(socket, pdf_modal: true)}
     else
-      {:noreply, redirect(socket, to: ~p"/deck/#{socket.assigns.deck_id}/pdf")}
+      {:noreply, start_pdf(socket)}
     end
+  end
+
+  def handle_event("start_pdf", _params, socket) do
+    {:noreply, start_pdf(socket)}
   end
 
   def handle_event("close_pdf", _params, socket) do
     {:noreply, assign(socket, pdf_modal: false)}
   end
 
+  def handle_event("dismiss_pdf_error", _params, socket) do
+    {:noreply, assign(socket, pdf_error: nil)}
+  end
+
   # ----- Edit mode ------------------------------------------------------------
 
   # AUTHORIZE every mutating event server-side — a client can push these
   # regardless of what the UI renders. Non-authors get a no-op.
-  @edit_events ~w(toggle_edit select_block select_slide save_text set_size
-                  add_block add_slide delete delete_slide undo queue_edit validate_edit
+  @edit_events ~w(toggle_edit select_block select_slide select_slide_bg save_text set_size set_tone
+                  add_block add_slide delete delete_slide remove_media_frame undo
+                  queue_edit validate_edit
                   save_image validate_image queue_image_gen
                   open_regen close_regen queue_regen validate_regen
                   open_theme close_theme set_theme
@@ -904,6 +1273,18 @@ defmodule UitstallingWeb.DeckLive do
     with {:ok, index} <- parse_index(socket, index) do
       {:noreply,
        assign(socket, selected: %{index: index, block: nil}, edit_form: %{}, edit_error: nil)}
+    end
+  end
+
+  # Background (empty-space) clicks come from the DeckNav hook on every
+  # click — they only mean "slide options" while editing.
+  def handle_event("select_slide_bg", %{"index" => index}, socket) do
+    with true <- socket.assigns.edit_mode,
+         {:ok, index} <- parse_index(socket, index) do
+      {:noreply,
+       assign(socket, selected: %{index: index, block: nil}, edit_form: %{}, edit_error: nil)}
+    else
+      _ -> {:noreply, socket}
     end
   end
 
@@ -951,6 +1332,24 @@ defmodule UitstallingWeb.DeckLive do
             end)
 
           Decks.put_block(raw, index, block, updated)
+
+        {:row, params} ->
+          columns = Enum.at(raw["slides"], index)["columns"] || []
+          existing = Decks.get_block(raw, index, block) || []
+
+          # Rebuild the row column by column; structured cells keep their
+          # tint, only the text changes.
+          row =
+            for ci <- 0..(length(columns) - 1) do
+              text = String.trim(params["cell_#{ci}"] || "")
+
+              case Enum.at(existing, ci) do
+                %{} = cell -> Map.put(cell, "text", text)
+                _ -> text
+              end
+            end
+
+          Decks.put_block(raw, index, block, row)
       end
 
     {:noreply, commit(socket, new_raw)}
@@ -959,6 +1358,15 @@ defmodule UitstallingWeb.DeckLive do
   def handle_event("set_size", %{"size" => size}, socket) when size in ~w(sm md lg) do
     %{index: index} = socket.assigns.selected
     {:noreply, commit(socket, Decks.put_slide_key(socket.assigns.raw, index, "size", size))}
+  end
+
+  def handle_event("set_tone", %{"tone" => tone}, socket) do
+    if tone in Decks.tones() do
+      %{index: index} = socket.assigns.selected
+      {:noreply, commit(socket, Decks.put_slide_key(socket.assigns.raw, index, "tone", tone))}
+    else
+      {:noreply, socket}
+    end
   end
 
   # Images have no text placeholder to commit — adding one just opens the
@@ -1019,6 +1427,16 @@ defmodule UitstallingWeb.DeckLive do
       # Only a known model id rides along — anything else means the default.
       model = params["model"]
 
+      # Reference is ON by default whenever the part holds an image — you're
+      # generating against what's there unless explicitly unticked.
+      reference =
+        if params["use_reference"] != "false" do
+          case Decks.get_block(socket.assigns.raw, index, "image") do
+            %{"asset_id" => asset_id} -> asset_id
+            _ -> nil
+          end
+        end
+
       Decks.queue_request(
         %{
           "type" => "asset",
@@ -1031,6 +1449,9 @@ defmodule UitstallingWeb.DeckLive do
           if Uitstalling.Assets.ImageModels.valid?(model),
             do: Map.put(request, "model", model),
             else: request
+        end)
+        |> then(fn request ->
+          if reference, do: Map.put(request, "reference_asset_id", reference), else: request
         end)
       )
 
@@ -1059,7 +1480,10 @@ defmodule UitstallingWeb.DeckLive do
 
     case {consumed, existing} do
       {[{:ok, asset}], _} ->
-        {:noreply, save_image_block(socket, index, asset.id, params)}
+        # A fresh file starts uncropped — the old image's pan/zoom is
+        # meaningless on it.
+        {:noreply,
+         save_image_block(socket, index, asset.id, Map.drop(params, ~w(crop_x crop_y crop_zoom)))}
 
       {[{:error, reason}], _} ->
         {:noreply, assign(socket, edit_error: upload_failure(reason))}
@@ -1087,6 +1511,33 @@ defmodule UitstallingWeb.DeckLive do
        socket
        |> assign(selected: %{index: index + 1, block: "body"}, edit_form: %{})
        |> push_event("goto_slide", %{index: index + 1})}
+    end
+  end
+
+  # Convert an empty media frame into a plain text slide — the frame IS the
+  # layout, so "removing" it means becoming a statement. The caption (or
+  # heading) carries over as the body so nothing typed is lost.
+  def handle_event("remove_media_frame", _params, socket) do
+    %{index: index} = socket.assigns.selected
+    raw_slide = Enum.at(socket.assigns.raw["slides"], index)
+
+    if raw_slide["layout"] == "media" and is_nil(raw_slide["src"]) do
+      body = raw_slide["caption"] || raw_slide["heading"] || "New text…"
+
+      converted =
+        raw_slide
+        |> Map.drop(~w(kind src caption))
+        |> Map.put("layout", "statement")
+        |> Map.put("body", body)
+        |> then(fn slide ->
+          # Don't say the same thing twice when the heading became the body
+          if body == raw_slide["heading"], do: Map.delete(slide, "heading"), else: slide
+        end)
+
+      new_raw = put_in(socket.assigns.raw, ["slides", Access.at(index)], converted)
+      {:noreply, commit(socket, new_raw)}
+    else
+      {:noreply, socket}
     end
   end
 
@@ -1330,6 +1781,44 @@ defmodule UitstallingWeb.DeckLive do
     {:noreply, refresh_pending(socket)}
   end
 
+  # ----- PDF export plumbing ------------------------------------------------------
+
+  defp start_pdf(%{assigns: %{pdf_busy: true}} = socket), do: assign(socket, pdf_modal: false)
+
+  defp start_pdf(socket) do
+    deck_id = socket.assigns.deck_id
+    filename = "#{Decks.deck_slug(deck_id)}.pdf"
+
+    socket
+    |> assign(pdf_modal: false, pdf_busy: true, pdf_error: nil)
+    |> start_async(:pdf_export, fn ->
+      with {:ok, pdf} <- Decks.Pdf.impl().render(deck_id) do
+        {:ok, Decks.PdfStore.put(pdf, filename)}
+      end
+    end)
+  end
+
+  def handle_async(:pdf_export, {:ok, result}, socket) do
+    case result do
+      {:ok, token} ->
+        {:noreply,
+         socket
+         |> assign(pdf_busy: false)
+         |> push_event("trigger_download", %{url: ~p"/pdf/#{token}"})}
+
+      {:error, reason} ->
+        Logger.error("PDF export failed for deck #{socket.assigns.deck_id}: #{inspect(reason)}")
+
+        {:noreply,
+         assign(socket, pdf_busy: false, pdf_error: "PDF failed — try again in a moment")}
+    end
+  end
+
+  def handle_async(:pdf_export, {:exit, reason}, socket) do
+    Logger.error("PDF export crashed for deck #{socket.assigns.deck_id}: #{inspect(reason)}")
+    {:noreply, assign(socket, pdf_busy: false, pdf_error: "PDF failed — try again in a moment")}
+  end
+
   # ----- Helpers ----------------------------------------------------------------
 
   defp refresh_pending(socket) do
@@ -1370,8 +1859,33 @@ defmodule UitstallingWeb.DeckLive do
       %{"asset_id" => asset_id}
       |> maybe_put("alt", String.trim(params["alt"] || ""))
       |> maybe_put("treatment", if(params["treatment"] == "full", do: "full"))
+      |> maybe_put("crop", parse_crop(params))
 
     commit(socket, Decks.put_block(socket.assigns.raw, index, "image", image))
+  end
+
+  # Crop values arrive as hidden-input strings from the .ImageCrop hook.
+  # Centered at zoom 1 is "no crop": stored as absence, so resetting and
+  # saving drops the key entirely.
+  defp parse_crop(params) do
+    with {x, ""} <- Float.parse(params["crop_x"] || ""),
+         {y, ""} <- Float.parse(params["crop_y"] || ""),
+         {zoom, ""} <- Float.parse(params["crop_zoom"] || ""),
+         true <- zoom > 1.001 or abs(x - 50.0) > 0.5 or abs(y - 50.0) > 0.5 do
+      %{
+        "x" => x |> min(100.0) |> max(0.0) |> Float.round(1),
+        "y" => y |> min(100.0) |> max(0.0) |> Float.round(1),
+        "zoom" => zoom |> min(4.0) |> max(1.0) |> Float.round(2)
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  # Prefill for the crop editor's inputs — sensible neutral when uncropped.
+  defp crop_part(value, part) do
+    default = %{"x" => 50, "y" => 50, "zoom" => 1}
+    get_in(value, ["crop", part]) || default[part]
   end
 
   defp maybe_put(map, _key, value) when value in [nil, ""], do: map
@@ -1398,8 +1912,11 @@ defmodule UitstallingWeb.DeckLive do
     raw_slide = Enum.at(raw["slides"], index) || %{}
     layout = raw_slide["layout"]
 
+    # Media slides may carry an app-managed image too — it's the only way to
+    # put a GENERATED image on one (media "src" is a raw URL the generator
+    # never writes), and the escape hatch when a src link has died.
     image =
-      if Map.has_key?(raw_slide, "image") or layout == "media",
+      if Map.has_key?(raw_slide, "image"),
         do: [],
         else: [{"image", "image"}]
 

@@ -42,7 +42,9 @@ if config_env() != :test do
          Enum.reject(
            [
              on_demand: true,
-             session_pool: [size: 1],
+             # checkout_timeout must absorb the on-demand cold start (Chrome
+             # boot + first page) — the 5s default 500s the first download.
+             session_pool: [size: 1, checkout_timeout: 60_000],
              chrome_executable: System.get_env("CHROME_EXECUTABLE"),
              no_sandbox: System.get_env("CHROME_NO_SANDBOX") in ~w(true 1)
            ],

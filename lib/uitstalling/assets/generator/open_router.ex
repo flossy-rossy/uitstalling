@@ -17,14 +17,16 @@ defmodule Uitstalling.Assets.Generator.OpenRouter do
   @impl true
   def generate(prompt, opts \\ []) do
     with {:ok, api_key} <- fetch_api_key() do
-      body = %{
-        model: opts[:model] || config(:image_model, Uitstalling.Assets.ImageModels.default()),
-        prompt: prompt,
-        # Slides are 16:9 frames; webp/png both fine, png is universally safe
-        aspect_ratio: "16:9",
-        output_format: "png",
-        n: 1
-      }
+      body =
+        %{
+          model: opts[:model] || config(:image_model, Uitstalling.Assets.ImageModels.default()),
+          prompt: prompt,
+          # Slides are 16:9 frames; webp/png both fine, png is universally safe
+          aspect_ratio: "16:9",
+          output_format: "png",
+          n: 1
+        }
+        |> put_reference(opts[:reference])
 
       url =
         config(:image_base_url, "https://openrouter.ai/api/v1")
@@ -60,6 +62,20 @@ defmodule Uitstalling.Assets.Generator.OpenRouter do
           {:error, {:http_error, reason}}
       end
     end
+  end
+
+  # Image-to-image: the reference rides along as a base64 data URL in
+  # OpenRouter's input_references (supported per-model; unsupported models
+  # simply error, which surfaces as a failed request).
+  defp put_reference(body, nil), do: body
+
+  defp put_reference(body, {bytes, content_type}) do
+    Map.put(body, :input_references, [
+      %{
+        type: "image_url",
+        image_url: %{url: "data:#{content_type};base64,#{Base.encode64(bytes)}"}
+      }
+    ])
   end
 
   defp fetch_api_key do

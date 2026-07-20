@@ -835,7 +835,7 @@ defmodule Uitstalling.Decks do
           ["#{path}.image.asset_id: required string"]
       end
 
-    unknown = Map.keys(image) -- ~w(asset_id alt treatment)
+    unknown = Map.keys(image) -- ~w(asset_id alt treatment crop)
 
     unknown_errors =
       if unknown == [], do: [], else: ["#{path}.image: unknown keys #{inspect(unknown)}"]
@@ -843,11 +843,39 @@ defmodule Uitstalling.Decks do
     id_errors ++
       unknown_errors ++
       opt_string(image, "alt", "#{path}.image") ++
-      enum(image, "treatment", @image_treatments, "#{path}.image")
+      enum(image, "treatment", @image_treatments, "#{path}.image") ++
+      validate_crop(image["crop"], path)
   end
 
   defp validate_image(_other, path),
     do: ["#{path}.image: must be an object with \"asset_id\""]
+
+  # A crop is three bounded numbers — pan focal point (percent) + zoom. The
+  # renderer builds CSS from these itself; JSON never carries styling.
+  defp validate_crop(nil, _path), do: []
+
+  defp validate_crop(%{} = crop, path) do
+    unknown = Map.keys(crop) -- ~w(x y zoom)
+
+    checks = [
+      {crop["x"], "x", 0, 100},
+      {crop["y"], "y", 0, 100},
+      {crop["zoom"], "zoom", 1, 4}
+    ]
+
+    range_errors =
+      for {value, key, min, max} <- checks,
+          not (is_number(value) and value >= min and value <= max) do
+        "#{path}.image.crop.#{key}: must be a number between #{min} and #{max}"
+      end
+
+    if unknown == [],
+      do: range_errors,
+      else: ["#{path}.image.crop: unknown keys #{inspect(unknown)}" | range_errors]
+  end
+
+  defp validate_crop(_other, path),
+    do: ["#{path}.image.crop: must be an object with x, y, zoom"]
 
   defp validate_fields("title", s, p),
     do: req_string(s, "heading", p) ++ opt_string(s, "subheading", p)

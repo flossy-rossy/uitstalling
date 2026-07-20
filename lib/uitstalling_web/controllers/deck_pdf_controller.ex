@@ -11,7 +11,7 @@ defmodule UitstallingWeb.DeckPdfController do
 
   alias Uitstalling.Decks
 
-  plug :load_deck
+  plug :load_deck when action in [:print, :download]
 
   def print(conn, _params) do
     conn
@@ -33,6 +33,18 @@ defmodule UitstallingWeb.DeckPdfController do
         conn
         |> put_flash(:error, "Couldn't produce the PDF — try again in a moment")
         |> redirect(to: ~p"/deck/#{deck_id}")
+    end
+  end
+
+  # Serve a background-generated PDF parked under a one-shot token — the
+  # response is instant, so the browser's download manager takes it cleanly.
+  def fetch(conn, %{"token" => token}) do
+    case Decks.PdfStore.take(token) do
+      {:ok, pdf, filename} ->
+        send_download(conn, {:binary, pdf}, filename: filename, content_type: "application/pdf")
+
+      :error ->
+        send_resp(conn, 404, "that download has expired — export it again from the deck")
     end
   end
 

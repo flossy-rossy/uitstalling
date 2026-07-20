@@ -48,9 +48,12 @@ defmodule UitstallingWeb.Router do
     get "/a/:id", AssetController, :show
 
     # PDF export: /print is the dead render the app's own headless Chrome
-    # prints (public, like presenting); /pdf sends the result as a download.
+    # prints (public, like presenting); /deck/:id/pdf generates synchronously
+    # (direct/scripted use); /pdf/:token serves a pre-generated file parked
+    # by the deck page's background export.
     get "/deck/:id/print", DeckPdfController, :print
     get "/deck/:id/pdf", DeckPdfController, :download
+    get "/pdf/:token", DeckPdfController, :fetch
 
     live_session :deck, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/", HomeLive, :index

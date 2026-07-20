@@ -42,9 +42,13 @@ defmodule Uitstalling.Decks.Pdf do
       )
 
     with {:ok, base64} <- result, do: {:ok, Base.decode64!(base64)}
+  rescue
+    # ChromicPDF raises on pool exhaustion/cold-start checkout timeouts
+    # (ExecutionError) — a failed download must degrade to the controller's
+    # flash, never a 500.
+    exception -> {:error, exception}
   catch
-    # A wedged Chrome exits the pool call (timeout/noproc) — a failed
-    # download must not take the caller down with it.
+    # A wedged Chrome exits the pool call (timeout/noproc) too.
     :exit, reason -> {:error, reason}
   end
 

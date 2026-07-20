@@ -308,6 +308,37 @@ defmodule Uitstalling.DecksTest do
     assert error =~ "unknown keys"
   end
 
+  test "image crop validates as three bounded numbers" do
+    image = fn crop ->
+      minimal(%{"image" => %{"asset_id" => "ast_0123456789abcdef", "crop" => crop}})
+    end
+
+    assert {:ok, _} = Decks.parse(image.(%{"x" => 30, "y" => 62.5, "zoom" => 2.0}))
+
+    assert {:error, [error]} = Decks.parse(image.(%{"x" => 30, "y" => 50, "zoom" => 9}))
+    assert error =~ "crop.zoom"
+
+    assert {:error, [error]} =
+             Decks.parse(image.(%{"x" => 30, "y" => 50, "zoom" => 2, "rotate" => 90}))
+
+    assert error =~ "unknown keys"
+
+    assert {:error, [error]} = Decks.parse(image.("tight"))
+    assert error =~ "must be an object"
+  end
+
+  test "a dead media src is deletable — kindless placeholder remains valid" do
+    deck =
+      minimal(%{"layout" => "media", "kind" => "image", "src" => "https://example.com/dead.png"})
+      |> update_in(["slides", Access.at(0)], &Map.delete(&1, "body"))
+
+    assert {:ok, _} = Decks.parse(deck)
+
+    without_src = Decks.delete_block(deck, 0, "src")
+    refute Map.has_key?(hd(without_src["slides"]), "src")
+    assert {:ok, _} = Decks.parse(without_src)
+  end
+
   test "insert_slide adds a valid placeholder with a fresh id" do
     raw = %{
       "title" => "T",

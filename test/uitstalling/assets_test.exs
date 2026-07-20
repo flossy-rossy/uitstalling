@@ -72,6 +72,27 @@ defmodule Uitstalling.AssetsTest do
     refute ImageModels.valid?(nil)
   end
 
+  test "create_generated passes a reference image to the generator", %{user: user, tmp: tmp} do
+    File.write!(tmp, @png)
+    {:ok, upload} = Assets.create_upload(user.id, tmp)
+
+    assert {:ok, asset} =
+             Assets.create_generated(user.id, "same but watercolor",
+               reference_asset_id: upload.id
+             )
+
+    # The fake embeds a ref| marker when a reference arrives
+    {:file, path, _type} = Assets.serve(asset)
+    assert File.read!(path) =~ "ref|"
+
+    # A reference that can't load fails the generation rather than silently
+    # producing an unrelated image
+    assert {:error, :reference_not_found} =
+             Assets.create_generated(user.id, "same again",
+               reference_asset_id: "ast_0000000000000000"
+             )
+  end
+
   test "create_generated uses the requested model, falling back on unknown ids",
        %{user: user} do
     assert {:ok, asset} =

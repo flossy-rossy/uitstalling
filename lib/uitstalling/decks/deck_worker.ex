@@ -547,7 +547,8 @@ defmodule Uitstalling.Decks.DeckWorker do
         with {:ok, asset} <-
                Assets.create_generated(owner_id, prompt,
                  subject: request["prompt"],
-                 model: request["model"]
+                 model: request["model"],
+                 reference_asset_id: request["reference_asset_id"]
                ) do
           attach(request, asset)
         end
