@@ -59,17 +59,45 @@ defmodule UitstallingWeb.DeckComponents do
   }
 
   # Deck-level themes: the "default" tone's base colours. "noir" is the house
-  # black/amber look; "midnight" is a deep navy base built for the cyan accent.
+  # black/amber look; "midnight" is a deep navy base built for the cyan
+  # accent. The pastel trio are LIGHT bases (light: true): dark body text,
+  # and accents switch to their -600 "deep" variants for contrast.
   @theme_base %{
-    "noir" => %{bg: "bg-zinc-950 text-zinc-100", muted: "text-zinc-400", faint: "text-zinc-500"},
+    "noir" => %{
+      bg: "bg-zinc-950 text-zinc-100",
+      muted: "text-zinc-400",
+      faint: "text-zinc-500",
+      light: false
+    },
     "midnight" => %{
       bg: "bg-[#0a1128] text-slate-100",
       muted: "text-slate-400",
-      faint: "text-slate-500"
+      faint: "text-slate-500",
+      light: false
+    },
+    "blush" => %{
+      bg: "bg-[#ffcbe1] text-zinc-900",
+      muted: "text-zinc-700",
+      faint: "text-zinc-500",
+      light: true
+    },
+    "pistachio" => %{
+      bg: "bg-[#d6e5bd] text-zinc-900",
+      muted: "text-zinc-700",
+      faint: "text-zinc-500",
+      light: true
+    },
+    "powder" => %{
+      bg: "bg-[#bcd8ec] text-zinc-900",
+      muted: "text-zinc-700",
+      faint: "text-zinc-500",
+      light: true
     }
   }
 
   defp theme_base(theme), do: @theme_base[theme] || @theme_base["noir"]
+
+  defp light_theme?(theme), do: theme_base(theme).light
 
   defp tone_bg("default", theme, _accent), do: theme_base(theme).bg
   defp tone_bg("accent", _theme, accent), do: "#{@accent_bg[accent]} text-zinc-950"
@@ -86,16 +114,28 @@ defmodule UitstallingWeb.DeckComponents do
   defp faint("danger", _theme), do: "text-red-300"
   defp faint("light", _theme), do: "text-zinc-500"
 
-  defp kicker_class("default", accent), do: @accent_text[accent]
-  defp kicker_class("accent", _accent), do: "text-zinc-700"
-  defp kicker_class("danger", _accent), do: "text-red-300"
-  defp kicker_class("light", accent), do: @accent_text_deep[accent]
+  # The default tone inherits the theme's base, so light themes need the
+  # deep accent there too — a -400 accent vanishes on pastel.
+  defp kicker_class("default", theme, accent) do
+    if light_theme?(theme), do: @accent_text_deep[accent], else: @accent_text[accent]
+  end
+
+  defp kicker_class("accent", _theme, _accent), do: "text-zinc-700"
+  defp kicker_class("danger", _theme, _accent), do: "text-red-300"
+  defp kicker_class("light", _theme, accent), do: @accent_text_deep[accent]
 
   # Class for `==accent==` inline marks, adapted so the mark stays visible
   # on every tone (accent-on-accent would vanish).
-  defp accent_mark("accent", _accent), do: "text-zinc-900 font-bold"
-  defp accent_mark("light", accent), do: "#{@accent_text_deep[accent]} font-semibold"
-  defp accent_mark(_tone, accent), do: @accent_text[accent]
+  defp accent_mark("accent", _theme, _accent), do: "text-zinc-900 font-bold"
+  defp accent_mark("light", _theme, accent), do: "#{@accent_text_deep[accent]} font-semibold"
+
+  defp accent_mark("default", theme, accent) do
+    if light_theme?(theme),
+      do: "#{@accent_text_deep[accent]} font-semibold",
+      else: @accent_text[accent]
+  end
+
+  defp accent_mark(_tone, _theme, accent), do: @accent_text[accent]
 
   # ----- Size lookups ---------------------------------------------------------
   #
@@ -157,8 +197,8 @@ defmodule UitstallingWeb.DeckComponents do
         bg: tone_bg(tone, theme, accent),
         muted: muted(tone, theme),
         faint: faint(tone, theme),
-        kicker_class: kicker_class(tone, accent),
-        accent_class: accent_mark(tone, accent),
+        kicker_class: kicker_class(tone, theme, accent),
+        accent_class: accent_mark(tone, theme, accent),
         accent_text: @accent_text[accent]
       )
 
@@ -169,7 +209,7 @@ defmodule UitstallingWeb.DeckComponents do
       class={[
         "relative min-h-screen w-full flex flex-col justify-center px-8 sm:px-16 lg:px-32 py-24",
         @bg,
-        @edit && "outline outline-1 -outline-offset-8 outline-dashed outline-white/20"
+        @edit && "outline outline-1 -outline-offset-8 outline-dashed outline-zinc-400/60"
       ]}
     >
       <button
@@ -256,7 +296,7 @@ defmodule UitstallingWeb.DeckComponents do
         class={[
           "relative rounded-lg transition",
           @edit && !@busy &&
-            "outline outline-1 outline-dashed outline-white/15 hover:outline-amber-400/80 hover:bg-white/5 cursor-pointer"
+            "outline outline-1 outline-dashed outline-zinc-400/50 hover:outline-amber-400/80 hover:bg-zinc-400/10 cursor-pointer"
         ]}
         phx-click={@edit && !@busy && "select_block"}
         phx-value-index={@index}
@@ -290,7 +330,10 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "title"}} = assigns) do
     ~H"""
     <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h1 class={["font-bold leading-tight mb-12", hero_heading(@sz)]}>
+      <h1 class={[
+        "font-bold leading-tight mb-12 max-w-full break-words text-balance",
+        hero_heading(@sz)
+      ]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h1>
     </.block>
@@ -311,7 +354,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "statement"}} = assigns) do
     ~H"""
     <.block :if={@f["heading"]} edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -326,7 +369,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "bullets"}} = assigns) do
     ~H"""
     <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -354,7 +397,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "points"}} = assigns) do
     ~H"""
     <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -380,7 +423,10 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "flow"}} = assigns) do
     ~H"""
     <.block :if={@f["heading"]} edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12 text-center", section_heading(@sz)]}>
+      <h2 class={[
+        "font-bold mb-12 text-center max-w-full break-words text-balance",
+        section_heading(@sz)
+      ]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -418,7 +464,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "big_code"}} = assigns) do
     ~H"""
     <.block :if={@f["heading"]} edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -445,7 +491,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "table"}} = assigns) do
     ~H"""
     <.block :if={@f["heading"]} edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -473,7 +519,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "media"}} = assigns) do
     ~H"""
     <.block :if={@f["heading"]} edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-8", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-8 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"]} accent_class={@accent_class} />
       </h2>
     </.block>
@@ -531,7 +577,7 @@ defmodule UitstallingWeb.DeckComponents do
   defp body(%{slide: %{layout: "faq"}} = assigns) do
     ~H"""
     <.block edit={@edit} index={@index} busy_blocks={@busy_blocks} path="heading">
-      <h2 class={["font-bold mb-12", section_heading(@sz)]}>
+      <h2 class={["font-bold mb-12 max-w-full break-words text-balance", section_heading(@sz)]}>
         <.inline text={@f["heading"] || "Q&A"} accent_class={@accent_class} />
       </h2>
     </.block>

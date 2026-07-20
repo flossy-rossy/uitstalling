@@ -8,7 +8,7 @@ defmodule Uitstalling.Assets.Generator do
   `Uitstalling.Assets.Generator.Fake`.
   """
 
-  @callback generate(prompt :: String.t()) ::
+  @callback generate(prompt :: String.t(), opts :: keyword()) ::
               {:ok, %{bytes: binary(), content_type: String.t()}} | {:error, term()}
 
   def impl do

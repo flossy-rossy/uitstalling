@@ -33,7 +33,17 @@ defmodule Uitstalling.Decks do
   @media_kinds ~w(image video)
 
   @sizes ~w(sm md lg)
-  @themes ~w(noir midnight)
+  @themes ~w(noir midnight blush pistachio powder)
+
+  # The accent each theme is designed around — theme switches re-pair the
+  # accent so ==marks== and kickers stay legible on the new base.
+  @theme_accents %{
+    "noir" => "amber",
+    "midnight" => "cyan",
+    "blush" => "rose",
+    "pistachio" => "emerald",
+    "powder" => "sky"
+  }
 
   # Keys every slide may carry, regardless of layout.
   @common_keys ~w(id layout tone size kicker footnote notes)
@@ -81,6 +91,9 @@ defmodule Uitstalling.Decks do
   def flow_colors, do: @flow_colors
   def layouts, do: @layouts
   def themes, do: @themes
+
+  @doc "The accent a theme is designed around."
+  def theme_accent(theme), do: @theme_accents[theme] || "amber"
 
   @doc """
   Parse untrusted deck JSON (a string or an already-decoded map).
@@ -434,6 +447,30 @@ defmodule Uitstalling.Decks do
   @doc "Delete the slide at `index`."
   def delete_slide(raw, index) do
     Map.update!(raw, "slides", &List.delete_at(&1, index))
+  end
+
+  @doc """
+  Insert a placeholder slide after `index` — the direct "grow the deck"
+  path, no model involved (the counterpart of `delete_slide/2`). The
+  placeholder validates on its own; the author types it exactly or hands
+  it to the agent from the editor it lands in.
+  """
+  def insert_slide(raw, index) do
+    slides = raw["slides"]
+    taken = for %{"id" => id} <- slides, is_binary(id), into: MapSet.new(), do: id
+
+    id =
+      Stream.iterate(length(slides), &(&1 + 1))
+      |> Stream.map(&"s#{&1}")
+      |> Enum.find(&(not MapSet.member?(taken, &1)))
+
+    slide = %{
+      "id" => id,
+      "layout" => "statement",
+      "body" => "A new point to make…"
+    }
+
+    Map.put(raw, "slides", List.insert_at(slides, index + 1, slide))
   end
 
   @doc "Fetch the value at a block path (`\"heading\"`, `\"points.1\"`, `\"steps.2.body\"`)."

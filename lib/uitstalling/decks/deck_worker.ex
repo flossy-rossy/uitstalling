@@ -545,7 +545,10 @@ defmodule Uitstalling.Decks.DeckWorker do
         prompt = Context.image_prompt(raw, slide, request["prompt"])
 
         with {:ok, asset} <-
-               Assets.create_generated(owner_id, prompt, subject: request["prompt"]) do
+               Assets.create_generated(owner_id, prompt,
+                 subject: request["prompt"],
+                 model: request["model"]
+               ) do
           attach(request, asset)
         end
     end

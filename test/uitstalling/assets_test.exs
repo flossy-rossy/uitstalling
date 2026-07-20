@@ -62,6 +62,27 @@ defmodule Uitstalling.AssetsTest do
     assert {:error, :fake_generation_failed} = Assets.create_generated(user.id, "FAIL: nope")
   end
 
+  test "image models list cheapest-first, and the default is the cheapest" do
+    alias Uitstalling.Assets.ImageModels
+
+    assert [%{id: "bytedance-seed/seedream-4.5"} | _] = ImageModels.all()
+    assert ImageModels.default() == "bytedance-seed/seedream-4.5"
+    assert ImageModels.valid?("openai/gpt-image-2")
+    refute ImageModels.valid?("evil/model")
+    refute ImageModels.valid?(nil)
+  end
+
+  test "create_generated uses the requested model, falling back on unknown ids",
+       %{user: user} do
+    assert {:ok, asset} =
+             Assets.create_generated(user.id, "a diagram", model: "openai/gpt-image-2")
+
+    assert asset.provider == "openai/gpt-image-2"
+
+    assert {:ok, asset} = Assets.create_generated(user.id, "a diagram", model: "evil/model")
+    assert asset.provider == "bytedance-seed/seedream-4.5"
+  end
+
   test "a failing object store surfaces an error instead of crashing the caller",
        %{user: user, tmp: tmp} do
     previous = Application.get_env(:uitstalling, :asset_storage)

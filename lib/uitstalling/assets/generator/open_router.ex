@@ -15,10 +15,10 @@ defmodule Uitstalling.Assets.Generator.OpenRouter do
   require Logger
 
   @impl true
-  def generate(prompt) do
+  def generate(prompt, opts \\ []) do
     with {:ok, api_key} <- fetch_api_key() do
       body = %{
-        model: config(:image_model, "bytedance-seed/seedream-4.5"),
+        model: opts[:model] || config(:image_model, Uitstalling.Assets.ImageModels.default()),
         prompt: prompt,
         # Slides are 16:9 frames; webp/png both fine, png is universally safe
         aspect_ratio: "16:9",

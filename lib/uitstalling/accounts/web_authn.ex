@@ -17,7 +17,17 @@ defmodule Uitstalling.Accounts.WebAuthn do
     %{type: "public-key", alg: -257}
   ]
 
-  @timeout_ms 60_000
+  # Ceremony budget the browser enforces. Cross-device (QR + phone) sign-in
+  # takes minutes, not seconds — find phone, unlock, scan, BLE handshake,
+  # biometric — and 60s was aborting it mid-flow. 5 minutes follows passkey
+  # UX guidance for hybrid flows.
+  @timeout_ms 300_000
+
+  # Server-side challenge validity for Wax verification, in seconds. Wax's
+  # own default is 120s, which expires DURING a QR flow the browser happily
+  # allows — keep it comfortably above @timeout_ms so the browser is always
+  # the binding constraint.
+  @challenge_ttl_s 600
 
   # ----- Registration -----------------------------------------------------
 
@@ -27,7 +37,8 @@ defmodule Uitstalling.Accounts.WebAuthn do
       Wax.new_registration_challenge(
         origin: origin(),
         rp_id: rp_id(),
-        user_verification: "required"
+        user_verification: "required",
+        timeout: @challenge_ttl_s
       )
 
     options = %{
@@ -77,7 +88,8 @@ defmodule Uitstalling.Accounts.WebAuthn do
       Wax.new_authentication_challenge(
         origin: origin(),
         rp_id: rp_id(),
-        user_verification: "required"
+        user_verification: "required",
+        timeout: @challenge_ttl_s
       )
 
     options = %{

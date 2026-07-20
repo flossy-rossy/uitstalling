@@ -308,6 +308,24 @@ defmodule Uitstalling.DecksTest do
     assert error =~ "unknown keys"
   end
 
+  test "insert_slide adds a valid placeholder with a fresh id" do
+    raw = %{
+      "title" => "T",
+      "slides" => [
+        %{"id" => "s1", "layout" => "statement", "body" => "one"},
+        %{"id" => "s2", "layout" => "statement", "body" => "two"}
+      ]
+    }
+
+    new_raw = Decks.insert_slide(raw, 0)
+
+    assert [%{"id" => "s1"}, %{"id" => new_id, "layout" => "statement"}, %{"id" => "s2"}] =
+             new_raw["slides"]
+
+    refute new_id in ["s1", "s2"]
+    assert {:ok, _deck} = Decks.parse(new_raw)
+  end
+
   test "has_video? is true only for a media slide with kind video and a src" do
     media = fn overrides ->
       deck = minimal(Map.merge(%{"layout" => "media"}, overrides))

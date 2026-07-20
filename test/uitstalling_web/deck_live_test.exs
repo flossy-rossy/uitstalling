@@ -64,6 +64,96 @@ defmodule UitstallingWeb.DeckLiveTest do
     refute render_hook(view, "close_pdf", %{}) =~ "DOWNLOAD AS PDF"
   end
 
+  test "add_slide inserts a placeholder after the selected slide and opens its editor",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_slide", %{"index" => 0})
+    html = render_hook(view, "add_slide", %{})
+
+    slides = deck_on_disk()["slides"]
+    assert length(slides) == 12
+    assert Enum.at(slides, 1)["body"] =~ "A new point"
+
+    ids = Enum.map(slides, & &1["id"])
+    assert ids == Enum.uniq(ids)
+
+    # Dropped straight into the new slide's body editor
+    assert html =~ "EDIT SLIDE 2"
+    assert html =~ "statement"
+  end
+
+  test "an open editor survives a background deck update without losing typed text",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => 0, "block" => "heading"})
+
+    # Type without saving…
+    view
+    |> element(~s(form[phx-submit="save_text"]))
+    |> render_change(%{"value" => "half-typed heading"})
+
+    # …then a pipeline result / other-session edit lands
+    send(view.pid, :deck_updated)
+    html = render(view)
+
+    assert html =~ "EDIT SLIDE 1"
+    assert html =~ "half-typed heading"
+  end
+
+  test "image regen queues the chosen model and drops unknown ones", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+
+    render_hook(view, "queue_image_gen", %{
+      "prompt" => "a clean diagram",
+      "model" => "openai/gpt-image-2"
+    })
+
+    render_hook(view, "select_block", %{"index" => 0, "block" => "image"})
+    render_hook(view, "queue_image_gen", %{"prompt" => "another one", "model" => "evil/model"})
+
+    requests = Enum.filter(Decks.open_requests(), &(&1["type"] == "asset"))
+    assert %{"model" => "openai/gpt-image-2"} = Enum.find(requests, &(&1["prompt"] =~ "clean"))
+    refute Enum.find(requests, &(&1["prompt"] =~ "another")) |> Map.has_key?("model")
+  end
+
+  test "set_theme restyles in place with the paired accent, undo-able", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "set_theme", %{"theme" => "blush"})
+
+    assert deck_on_disk()["theme"] == "blush"
+    assert deck_on_disk()["accent"] == "rose"
+
+    # An unknown theme is a no-op
+    render_hook(view, "set_theme", %{"theme" => "vantablack"})
+    assert deck_on_disk()["theme"] == "blush"
+
+    render_hook(view, "undo", %{})
+    assert deck_on_disk()["accent"] == "amber"
+  end
+
+  test "regen panel keeps typed changes across re-renders", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "open_regen", %{})
+
+    view
+    |> form("#regen-form", %{
+      "prompt" => "same talk but with more slides please",
+      "voice" => "drier",
+      "research" => ""
+    })
+    |> render_change()
+
+    html = render(view)
+    assert html =~ "same talk but with more slides please"
+    assert html =~ "drier"
+  end
+
   test "renders every slide of the demo deck", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/deck/demo")
 
@@ -120,7 +210,7 @@ defmodule UitstallingWeb.DeckLiveTest do
     assert html =~ "EDIT SLIDE 6"
     assert html =~ "· code"
     # The direct edit form is pre-filled with the raw mini-markup text
-    assert html =~ "form phx-submit=\"save_text\""
+    assert html =~ ~s(phx-submit="save_text")
     assert html =~ "==authData== || SHA-256(==clientDataJSON==)"
   end
 
@@ -485,7 +575,7 @@ defmodule UitstallingWeb.DeckLiveTest do
 
     {:ok, view, _html} = live(conn, "/deck/demo")
     render_hook(view, "toggle_edit", %{})
-    view |> element("button", "regenerate deck") |> render_click()
+    view |> element(~s(button[phx-click="open_regen"])) |> render_click()
 
     # The original brief and research come back editable
     html = render(view)
@@ -510,7 +600,7 @@ defmodule UitstallingWeb.DeckLiveTest do
 
     # The create overlay takes over while it generates; undo holds the old deck
     assert render(view) =~ "generating your presentation"
-    assert render(view) =~ "↶ undo"
+    assert has_element?(view, ~s(button[phx-click="undo"]))
   end
 
   test "failed generations surface as a dismissible banner", %{conn: conn} do

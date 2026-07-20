@@ -23,6 +23,7 @@ defmodule Uitstalling.Assets do
 
   alias Uitstalling.Assets.Asset
   alias Uitstalling.Assets.Generator
+  alias Uitstalling.Assets.ImageModels
   alias Uitstalling.Repo
 
   @max_bytes 5_000_000
@@ -67,13 +68,20 @@ defmodule Uitstalling.Assets do
   full composed prompt (art direction etc.) is reproducible and not stored.
   """
   def create_generated(user_id, prompt, opts \\ []) do
-    with {:ok, %{bytes: bytes}} <- Generator.impl().generate(prompt),
+    # An unknown/absent model falls back to the configured default — the
+    # model id travels through a request row, so never trust it blindly.
+    model =
+      if ImageModels.valid?(opts[:model]),
+        do: opts[:model],
+        else: Application.get_env(:uitstalling, :image_model, ImageModels.default())
+
+    with {:ok, %{bytes: bytes}} <- Generator.impl().generate(prompt, model: model),
          :ok <- check_size(bytes),
          {:ok, content_type, ext} <-
            match_signature(binary_part(bytes, 0, min(16, byte_size(bytes)))) do
       insert_asset(user_id, "gen", {:bytes, bytes}, byte_size(bytes), content_type, ext,
         prompt: opts[:subject] || prompt,
-        provider: Application.get_env(:uitstalling, :image_model, "openrouter")
+        provider: model
       )
     else
       {:error, reason} -> {:error, reason}

@@ -9,16 +9,19 @@ defmodule Uitstalling.Assets.Generator.Fake do
   @png_header <<0x89, "PNG\r\n", 0x1A, "\n">>
 
   @impl true
-  def generate("FAIL:" <> _rest), do: {:error, :fake_generation_failed}
+  def generate(prompt, opts \\ [])
+
+  def generate("FAIL:" <> _rest, _opts), do: {:error, :fake_generation_failed}
 
   # A provider that stalls until the configured HTTP timeout, then fails the
   # way the real client would — exercises the timeout/cancel paths.
-  def generate("SLOW:" <> _rest) do
+  def generate("SLOW:" <> _rest, _opts) do
     Process.sleep(Application.get_env(:uitstalling, :image_gen_timeout, 500))
     {:error, {:http_error, :timeout}}
   end
 
-  def generate(prompt) do
-    {:ok, %{bytes: @png_header <> prompt, content_type: "image/png"}}
+  # The chosen model rides along in the bytes so tests can assert on it.
+  def generate(prompt, opts) do
+    {:ok, %{bytes: @png_header <> "#{opts[:model]}|" <> prompt, content_type: "image/png"}}
   end
 end

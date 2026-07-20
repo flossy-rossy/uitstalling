@@ -14,6 +14,61 @@ defmodule UitstallingWeb.NewDeckLive do
 
   @minutes_options [5, 10, 15, 20, 30, 45]
 
+  # Picker cards for each theme in Decks.themes(). Literal class strings —
+  # Tailwind needs them complete at build time.
+  @theme_cards [
+    %{
+      id: "noir",
+      label: "noir",
+      sub: "black · amber",
+      card: "bg-zinc-950 ring-zinc-800",
+      bar: "bg-amber-400",
+      line: "bg-zinc-100",
+      line2: "bg-zinc-600",
+      ring: "peer-checked:ring-amber-400"
+    },
+    %{
+      id: "midnight",
+      label: "midnight",
+      sub: "navy · cyan",
+      card: "bg-[#0a1128] ring-slate-800",
+      bar: "bg-cyan-400",
+      line: "bg-slate-100",
+      line2: "bg-slate-600",
+      ring: "peer-checked:ring-cyan-400"
+    },
+    %{
+      id: "blush",
+      label: "blush",
+      sub: "pastel pink · rose",
+      card: "bg-[#ffcbe1] ring-rose-200",
+      bar: "bg-rose-600",
+      line: "bg-zinc-800",
+      line2: "bg-zinc-500",
+      ring: "peer-checked:ring-rose-400"
+    },
+    %{
+      id: "pistachio",
+      label: "pistachio",
+      sub: "pastel green · emerald",
+      card: "bg-[#d6e5bd] ring-emerald-200",
+      bar: "bg-emerald-600",
+      line: "bg-zinc-800",
+      line2: "bg-zinc-500",
+      ring: "peer-checked:ring-emerald-400"
+    },
+    %{
+      id: "powder",
+      label: "powder",
+      sub: "pastel blue · sky",
+      card: "bg-[#bcd8ec] ring-sky-200",
+      bar: "bg-sky-600",
+      line: "bg-zinc-800",
+      line2: "bg-zinc-500",
+      ring: "peer-checked:ring-sky-400"
+    }
+  ]
+
   def mount(_params, _session, socket) do
     if Accounts.can_author?(socket.assigns.current_user) do
       {:ok,
@@ -21,7 +76,11 @@ defmodule UitstallingWeb.NewDeckLive do
        |> assign(
          page_title: "New presentation",
          minutes_options: @minutes_options,
-         research_error: nil
+         theme_cards: @theme_cards,
+         research_error: nil,
+         # Inputs render from this on every patch — without it, the first
+         # re-render (e.g. upload progress) resets whatever was typed.
+         form: to_form(%{"theme" => "noir", "voice" => "", "minutes" => "10", "prompt" => ""})
        )
        |> allow_upload(:research,
          accept: ~w(.pdf .docx),
@@ -49,28 +108,25 @@ defmodule UitstallingWeb.NewDeckLive do
           <section>
             <p class="font-mono text-zinc-500 text-xs tracking-wider mb-3">THEME</p>
             <div class="grid sm:grid-cols-2 gap-4">
-              <label class="cursor-pointer">
-                <input type="radio" name="theme" value="noir" checked class="peer sr-only" />
-                <div class="rounded-xl ring-1 ring-zinc-700 peer-checked:ring-2 peer-checked:ring-amber-400 bg-zinc-900 p-5 transition">
-                  <div class="h-20 rounded-lg bg-zinc-950 ring-1 ring-zinc-800 p-4">
-                    <div class="h-2 w-16 rounded bg-amber-400"></div>
-                    <div class="mt-2 h-3 w-32 rounded bg-zinc-100"></div>
-                    <div class="mt-2 h-2 w-24 rounded bg-zinc-600"></div>
+              <label :for={theme <- @theme_cards} class="cursor-pointer">
+                <input
+                  type="radio"
+                  name="theme"
+                  value={theme.id}
+                  checked={(@form[:theme].value || "noir") == theme.id}
+                  class="peer sr-only"
+                />
+                <div class={[
+                  "rounded-xl ring-1 ring-zinc-700 peer-checked:ring-2 p-5 transition bg-zinc-900",
+                  theme.ring
+                ]}>
+                  <div class={["h-20 rounded-lg ring-1 p-4", theme.card]}>
+                    <div class={["h-2 w-16 rounded", theme.bar]}></div>
+                    <div class={["mt-2 h-3 w-32 rounded", theme.line]}></div>
+                    <div class={["mt-2 h-2 w-24 rounded", theme.line2]}></div>
                   </div>
-                  <p class="mt-3 font-mono text-sm">noir</p>
-                  <p class="font-mono text-xs text-zinc-500">black · amber</p>
-                </div>
-              </label>
-              <label class="cursor-pointer">
-                <input type="radio" name="theme" value="midnight" class="peer sr-only" />
-                <div class="rounded-xl ring-1 ring-zinc-700 peer-checked:ring-2 peer-checked:ring-cyan-400 bg-zinc-900 p-5 transition">
-                  <div class="h-20 rounded-lg bg-[#0a1128] ring-1 ring-slate-800 p-4">
-                    <div class="h-2 w-16 rounded bg-cyan-400"></div>
-                    <div class="mt-2 h-3 w-32 rounded bg-slate-100"></div>
-                    <div class="mt-2 h-2 w-24 rounded bg-slate-600"></div>
-                  </div>
-                  <p class="mt-3 font-mono text-sm">midnight</p>
-                  <p class="font-mono text-xs text-zinc-500">navy · cyan</p>
+                  <p class="mt-3 font-mono text-sm">{theme.label}</p>
+                  <p class="font-mono text-xs text-zinc-500">{theme.sub}</p>
                 </div>
               </label>
             </div>
@@ -81,6 +137,7 @@ defmodule UitstallingWeb.NewDeckLive do
             <input
               type="text"
               name="voice"
+              value={@form[:voice].value}
               placeholder="e.g. technical conference crowd — punchy, confident, no fluff"
               class="w-full bg-zinc-900 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
             />
@@ -94,7 +151,7 @@ defmodule UitstallingWeb.NewDeckLive do
             >
               {Phoenix.HTML.Form.options_for_select(
                 Enum.map(@minutes_options, &{"#{&1} minutes · ~#{target_slides(&1)} slides", &1}),
-                10
+                parse_minutes(@form[:minutes].value)
               )}
             </select>
           </section>
@@ -148,7 +205,7 @@ defmodule UitstallingWeb.NewDeckLive do
               required
               placeholder="The topic, the main points you want to land, anything the audience must walk away knowing…"
               class="w-full bg-zinc-900 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-            ></textarea>
+            >{@form[:prompt].value}</textarea>
           </section>
 
           <button
@@ -163,8 +220,8 @@ defmodule UitstallingWeb.NewDeckLive do
     """
   end
 
-  def handle_event("validate", _params, socket) do
-    {:noreply, socket}
+  def handle_event("validate", params, socket) do
+    {:noreply, assign(socket, form: to_form(params))}
   end
 
   def handle_event("remove_research", %{"ref" => ref}, socket) do
@@ -215,8 +272,8 @@ defmodule UitstallingWeb.NewDeckLive do
   end
 
   defp create_deck(socket, params, prompt, research) do
-    theme = if params["theme"] == "midnight", do: "midnight", else: "noir"
-    accent = if theme == "midnight", do: "cyan", else: "amber"
+    theme = if params["theme"] in Decks.themes(), do: params["theme"], else: "noir"
+    accent = Decks.theme_accent(theme)
     minutes = parse_minutes(params["minutes"])
 
     voice =

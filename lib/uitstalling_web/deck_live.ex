@@ -9,6 +9,16 @@ defmodule UitstallingWeb.DeckLive do
 
   @undo_depth 20
 
+  # Swatches for the in-place theme switcher. Literal classes (Tailwind),
+  # same bases as Decks.themes() / DeckComponents.
+  @theme_swatches [
+    {"noir", "bg-zinc-950"},
+    {"midnight", "bg-[#0a1128]"},
+    {"blush", "bg-[#ffcbe1]"},
+    {"pistachio", "bg-[#d6e5bd]"},
+    {"powder", "bg-[#bcd8ec]"}
+  ]
+
   # Optional scalar parts a slide of each layout may gain (beyond what the
   # validator requires). "kicker"/"footnote" are addable on every layout.
   @addable_scalars %{
@@ -82,8 +92,14 @@ defmodule UitstallingWeb.DeckLive do
           can_edit: can_edit,
           edit_mode: false,
           selected: nil,
+          # Typed-but-unsaved editor state, keyed by input name. Editor
+          # fields render from this first, so a :deck_updated broadcast
+          # landing mid-edit can't reset what's been typed.
+          edit_form: %{},
           regen: nil,
           pdf_modal: false,
+          theme_panel: false,
+          theme_swatches: @theme_swatches,
           undo: [],
           edit_error: nil,
           pending: [],
@@ -127,8 +143,12 @@ defmodule UitstallingWeb.DeckLive do
   def render(assigns) do
     ~H"""
     <main id="deck" phx-hook=".DeckNav">
+      <%!-- Keyed by slide id: an insert/delete moves DOM nodes instead of
+           rewriting every following slide in place — which also keeps the
+           browser's scroll anchored to the slide you're actually on. --%>
       <.slide
         :for={{slide, i} <- Enum.with_index(@deck.slides)}
+        :key={slide.id}
         deck={@deck}
         slide={slide}
         index={i}
@@ -185,20 +205,6 @@ defmodule UitstallingWeb.DeckLive do
         >
           {if @edit_mode, do: "✓ done", else: "✎ edit"}
         </button>
-        <button
-          :if={@can_edit and @edit_mode}
-          phx-click="open_regen"
-          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
-        >
-          ↻ regenerate deck
-        </button>
-        <button
-          :if={@undo != []}
-          phx-click="undo"
-          class="font-mono text-sm px-4 py-2 rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 transition"
-        >
-          ↶ undo ({length(@undo)})
-        </button>
         <span
           :if={@pending != []}
           class="font-mono text-xs text-amber-400 bg-zinc-900/80 px-3 py-1.5 rounded flex items-center gap-2"
@@ -216,6 +222,75 @@ defmodule UitstallingWeb.DeckLive do
             ✕ {request_label(req)}
           </button>
         </span>
+      </div>
+
+      <%!-- Edit command rail — icon squares on the left so the bottom bar
+           stays lean as edit tooling grows --%>
+      <div
+        :if={@can_edit and @edit_mode}
+        class="fixed left-4 top-1/2 -translate-y-1/2 z-40 flex flex-col gap-2"
+      >
+        <button
+          phx-click="open_theme"
+          title="change theme"
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+        >
+          <.icon name="hero-swatch" class="w-5 h-5" />
+        </button>
+        <button
+          phx-click="open_regen"
+          title="regenerate deck"
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+        >
+          <.icon name="hero-arrow-path" class="w-5 h-5" />
+        </button>
+        <button
+          :if={@undo != []}
+          phx-click="undo"
+          title={"undo (#{length(@undo)})"}
+          class="w-11 h-11 flex items-center justify-center rounded-lg ring-1 bg-zinc-900/80 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+        >
+          <.icon name="hero-arrow-uturn-left" class="w-5 h-5" />
+        </button>
+      </div>
+
+      <div
+        :if={@theme_panel}
+        class="fixed inset-0 z-50 bg-zinc-950/80 flex items-center justify-center p-4 sm:p-6"
+      >
+        <div class="w-full max-w-md bg-zinc-900 ring-1 ring-zinc-700 rounded-xl p-6">
+          <p class="font-mono text-amber-400 text-xs tracking-wider mb-4">THEME</p>
+          <p class="text-zinc-400 text-sm mb-5">
+            Restyles the deck in place — content untouched, and ↶ undo brings
+            the old look back.
+          </p>
+          <div class="grid grid-cols-5 gap-3">
+            <button
+              :for={{id, swatch} <- @theme_swatches}
+              phx-click="set_theme"
+              phx-value-theme={id}
+              class="flex flex-col items-center gap-1.5"
+            >
+              <span class={[
+                "w-12 h-12 rounded-lg ring-2 transition",
+                swatch,
+                if((@deck.theme || "noir") == id,
+                  do: "ring-amber-400",
+                  else: "ring-zinc-700 hover:ring-zinc-500"
+                )
+              ]}></span>
+              <span class="font-mono text-[10px] text-zinc-400">{id}</span>
+            </button>
+          </div>
+          <div class="mt-6 flex justify-end">
+            <button
+              phx-click="close_theme"
+              class="px-5 py-2.5 rounded-lg text-zinc-300 ring-1 ring-zinc-700 hover:text-zinc-100 hover:ring-zinc-500"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       </div>
 
       <div
@@ -244,6 +319,7 @@ defmodule UitstallingWeb.DeckLive do
         selected={@selected}
         slide={Enum.at(@deck.slides, @selected.index)}
         value={@selected.block && Decks.get_block(@raw, @selected.index, @selected.block)}
+        edit_form={@edit_form}
         addable={addable_parts(@raw, @selected.index)}
         edit_error={@edit_error}
         uploads={assigns[:uploads]}
@@ -333,6 +409,7 @@ defmodule UitstallingWeb.DeckLive do
   attr(:selected, :map, required: true)
   attr(:slide, Uitstalling.Decks.Slide, required: true)
   attr(:value, :any, default: nil)
+  attr(:edit_form, :map, default: %{})
   attr(:addable, :list, default: [])
   attr(:edit_error, :string, default: nil)
   attr(:uploads, :any, default: nil)
@@ -397,7 +474,7 @@ defmodule UitstallingWeb.DeckLive do
               <input
                 type="text"
                 name="alt"
-                value={@value && @value["alt"]}
+                value={@edit_form["alt"] || (@value && @value["alt"])}
                 class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
               />
 
@@ -411,7 +488,10 @@ defmodule UitstallingWeb.DeckLive do
                     type="radio"
                     name="treatment"
                     value={treatment}
-                    checked={((@value && @value["treatment"]) || "side") == treatment}
+                    checked={
+                      (@edit_form["treatment"] || (@value && @value["treatment"]) || "side") ==
+                        treatment
+                    }
                     class="text-amber-500 bg-zinc-950 border-zinc-700 focus:ring-amber-500"
                   /> {label}
                 </label>
@@ -435,13 +515,28 @@ defmodule UitstallingWeb.DeckLive do
                   true -> "OR DESCRIBE IT AND GENERATE"
                 end}
               </p>
-              <form id="image-gen-form" phx-submit="queue_image_gen" class="mt-2">
+              <form
+                id="image-gen-form"
+                phx-submit="queue_image_gen"
+                phx-change="validate_edit"
+                class="mt-2"
+              >
                 <textarea
                   name="prompt"
                   rows="3"
                   placeholder="e.g. a clean isometric illustration of a phishing proxy between a user and a bank"
                   class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-                >{@gen_prompt}</textarea>
+                >{@edit_form["prompt"] || @gen_prompt}</textarea>
+                <p class="font-mono text-zinc-500 text-xs mt-3 mb-1">MODEL</p>
+                <select
+                  name="model"
+                  class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-mono text-sm"
+                >
+                  {Phoenix.HTML.Form.options_for_select(
+                    Uitstalling.Assets.ImageModels.options(),
+                    @edit_form["model"] || Uitstalling.Assets.ImageModels.default()
+                  )}
+                </select>
                 <div class="mt-3 flex justify-end">
                   <button
                     type="submit"
@@ -453,8 +548,15 @@ defmodule UitstallingWeb.DeckLive do
               </form>
             </div>
 
-            <%!-- Block level: edit the text exactly --%>
-            <form :if={@kind not in [:agent_only, :image]} phx-submit="save_text">
+            <%!-- Block level: edit the text exactly. Typed state (@edit_form)
+                 wins over the stored value, so background deck updates can't
+                 reset an editor mid-thought. --%>
+            <form
+              :if={@kind not in [:agent_only, :image]}
+              id="block-form"
+              phx-submit="save_text"
+              phx-change="validate_edit"
+            >
               <%= case @kind do %>
                 <% :scalar -> %>
                   <textarea
@@ -464,14 +566,14 @@ defmodule UitstallingWeb.DeckLive do
                       "w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4",
                       if(@selected.block == "code", do: "font-mono", else: "font-sans")
                     ]}
-                  >{@value}</textarea>
+                  >{@edit_form["value"] || @value}</textarea>
                 <% :lines -> %>
                   <p class="font-mono text-zinc-500 text-xs mb-2">ONE BULLET PER LINE</p>
                   <textarea
                     name="value"
                     rows="6"
                     class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-                  >{Enum.join(@value, "\n")}</textarea>
+                  >{@edit_form["value"] || Enum.join(@value, "\n")}</textarea>
                 <% {:map, fields} -> %>
                   <div :for={field <- fields} class="mb-3">
                     <p class="font-mono text-zinc-500 text-xs mb-1 uppercase">{field}</p>
@@ -479,7 +581,7 @@ defmodule UitstallingWeb.DeckLive do
                       name={field}
                       rows={if field in ~w(body a), do: 3, else: 1}
                       class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-3 font-sans"
-                    >{@value[field]}</textarea>
+                    >{@edit_form[field] || @value[field]}</textarea>
                   </div>
               <% end %>
               <p class="mt-2 font-mono text-zinc-600 text-xs">
@@ -507,12 +609,18 @@ defmodule UitstallingWeb.DeckLive do
               <p :if={@kind != :agent_only} class="font-mono text-zinc-500 text-xs mb-2">
                 OR ASK THE AGENT TO WRITE IT
               </p>
-              <.agent_form placeholder={"e.g. reword this #{@selected.block} more simply"} />
+              <.agent_form
+                placeholder={"e.g. reword this #{@selected.block} more simply"}
+                value={@edit_form["prompt"]}
+              />
             </div>
           <% else %>
             <%!-- Slide level: generation-oriented --%>
             <p class="font-mono text-zinc-500 text-xs mb-2">DESCRIBE THE CHANGES</p>
-            <.agent_form placeholder="e.g. rework this slide around three punchy takeaways" />
+            <.agent_form
+              placeholder="e.g. rework this slide around three punchy takeaways"
+              value={@edit_form["prompt"]}
+            />
 
             <div :if={@addable != []} class="mt-6">
               <p class="font-mono text-zinc-500 text-xs mb-2">ADD A PART</p>
@@ -528,6 +636,19 @@ defmodule UitstallingWeb.DeckLive do
               </div>
               <p class="mt-2 font-mono text-zinc-600 text-xs">
                 opens the new part's editor — type it exactly, or have it generated
+              </p>
+            </div>
+
+            <div class="mt-6">
+              <p class="font-mono text-zinc-500 text-xs mb-2">GROW THE DECK</p>
+              <button
+                phx-click="add_slide"
+                class="px-4 py-2.5 rounded-lg font-mono text-sm ring-1 bg-zinc-950 text-zinc-400 ring-zinc-700 hover:text-amber-400 hover:ring-amber-500 transition"
+              >
+                + add a slide after this one
+              </button>
+              <p class="mt-2 font-mono text-zinc-600 text-xs">
+                opens the new slide's editor — type it exactly, or have the agent write it
               </p>
             </div>
 
@@ -618,6 +739,7 @@ defmodule UitstallingWeb.DeckLive do
         <form
           id="regen-form"
           phx-submit="queue_regen"
+          phx-change="validate_regen"
           class="flex-1 min-h-0 overflow-y-auto px-6 pb-2"
         >
           <p class="text-zinc-400 text-sm mb-4">
@@ -678,16 +800,17 @@ defmodule UitstallingWeb.DeckLive do
   end
 
   attr(:placeholder, :string, required: true)
+  attr(:value, :string, default: nil)
 
   defp agent_form(assigns) do
     ~H"""
-    <form phx-submit="queue_edit" class="mt-2">
+    <form id="agent-form" phx-submit="queue_edit" phx-change="validate_edit" class="mt-2">
       <textarea
         name="prompt"
         rows="3"
         placeholder={@placeholder}
         class="w-full bg-zinc-950 text-zinc-100 rounded-lg ring-1 ring-zinc-700 focus:ring-amber-500 border-0 p-4 font-sans"
-      ></textarea>
+      >{@value}</textarea>
       <div class="mt-3 flex justify-end">
         <button
           type="submit"
@@ -749,9 +872,10 @@ defmodule UitstallingWeb.DeckLive do
   # AUTHORIZE every mutating event server-side — a client can push these
   # regardless of what the UI renders. Non-authors get a no-op.
   @edit_events ~w(toggle_edit select_block select_slide save_text set_size
-                  add_block delete delete_slide undo queue_edit
+                  add_block add_slide delete delete_slide undo queue_edit validate_edit
                   save_image validate_image queue_image_gen
-                  open_regen close_regen queue_regen
+                  open_regen close_regen queue_regen validate_regen
+                  open_theme close_theme set_theme
                   cancel_request dismiss_failure)
 
   def handle_event(event, _params, %{assigns: %{can_edit: false}} = socket)
@@ -760,7 +884,8 @@ defmodule UitstallingWeb.DeckLive do
   end
 
   def handle_event("toggle_edit", _params, socket) do
-    {:noreply, assign(socket, edit_mode: !socket.assigns.edit_mode, selected: nil)}
+    {:noreply,
+     assign(socket, edit_mode: !socket.assigns.edit_mode, selected: nil, edit_form: %{})}
   end
 
   def handle_event("select_block", %{"index" => index, "block" => block}, socket) do
@@ -768,7 +893,8 @@ defmodule UitstallingWeb.DeckLive do
     # rather than crashing pattern matches downstream.
     with {:ok, index} <- parse_index(socket, index),
          {:ok, _parsed} <- Uitstalling.Decks.BlockPath.parse(block) do
-      {:noreply, assign(socket, selected: %{index: index, block: block}, edit_error: nil)}
+      {:noreply,
+       assign(socket, selected: %{index: index, block: block}, edit_form: %{}, edit_error: nil)}
     else
       _ -> {:noreply, socket}
     end
@@ -776,12 +902,19 @@ defmodule UitstallingWeb.DeckLive do
 
   def handle_event("select_slide", %{"index" => index}, socket) do
     with {:ok, index} <- parse_index(socket, index) do
-      {:noreply, assign(socket, selected: %{index: index, block: nil}, edit_error: nil)}
+      {:noreply,
+       assign(socket, selected: %{index: index, block: nil}, edit_form: %{}, edit_error: nil)}
     end
   end
 
   def handle_event("cancel_edit", _params, socket) do
-    {:noreply, assign(socket, selected: nil, edit_error: nil)}
+    {:noreply, assign(socket, selected: nil, edit_form: %{}, edit_error: nil)}
+  end
+
+  # Hold typed-but-unsaved editor fields server-side (all editor forms
+  # phx-change here; keys don't collide across the forms visible together).
+  def handle_event("validate_edit", params, socket) do
+    {:noreply, assign(socket, edit_form: merge_edit_form(socket, params))}
   end
 
   # ----- Direct mutations (no model involved) ----------------------------------
@@ -832,7 +965,9 @@ defmodule UitstallingWeb.DeckLive do
   # image editor; the slide changes only when an upload is saved.
   def handle_event("add_block", %{"key" => "image"}, socket) do
     %{index: index} = socket.assigns.selected
-    {:noreply, assign(socket, selected: %{index: index, block: "image"}, edit_error: nil)}
+
+    {:noreply,
+     assign(socket, selected: %{index: index, block: "image"}, edit_form: %{}, edit_error: nil)}
   end
 
   # Adds a valid placeholder through the normal commit path (undo-able), then
@@ -856,7 +991,7 @@ defmodule UitstallingWeb.DeckLive do
     socket =
       if socket.assigns.edit_error,
         do: socket,
-        else: assign(socket, selected: %{index: index, block: new_path})
+        else: assign(socket, selected: %{index: index, block: new_path}, edit_form: %{})
 
     {:noreply, socket}
   end
@@ -868,11 +1003,11 @@ defmodule UitstallingWeb.DeckLive do
 
   # ----- Images (app-managed asset references) ----------------------------------
 
-  def handle_event("validate_image", _params, socket) do
-    {:noreply, socket}
+  def handle_event("validate_image", params, socket) do
+    {:noreply, assign(socket, edit_form: merge_edit_form(socket, params))}
   end
 
-  def handle_event("queue_image_gen", %{"prompt" => prompt}, socket) do
+  def handle_event("queue_image_gen", %{"prompt" => prompt} = params, socket) do
     prompt = String.trim(prompt)
 
     if prompt == "" do
@@ -881,13 +1016,23 @@ defmodule UitstallingWeb.DeckLive do
       %{index: index} = socket.assigns.selected
       slide = Enum.at(socket.assigns.deck.slides, index)
 
-      Decks.queue_request(%{
-        "type" => "asset",
-        "deck_id" => socket.assigns.deck_id,
-        "slide_id" => slide.id,
-        "block" => "image",
-        "prompt" => prompt
-      })
+      # Only a known model id rides along — anything else means the default.
+      model = params["model"]
+
+      Decks.queue_request(
+        %{
+          "type" => "asset",
+          "deck_id" => socket.assigns.deck_id,
+          "slide_id" => slide.id,
+          "block" => "image",
+          "prompt" => prompt
+        }
+        |> then(fn request ->
+          if Uitstalling.Assets.ImageModels.valid?(model),
+            do: Map.put(request, "model", model),
+            else: request
+        end)
+      )
 
       Phoenix.PubSub.broadcast_from(
         Uitstalling.PubSub,
@@ -898,7 +1043,7 @@ defmodule UitstallingWeb.DeckLive do
 
       Decks.DeckWorker.kick(socket.assigns.deck_id)
 
-      {:noreply, socket |> assign(selected: nil) |> refresh_pending()}
+      {:noreply, socket |> assign(selected: nil, edit_form: %{}) |> refresh_pending()}
     end
   end
 
@@ -928,6 +1073,23 @@ defmodule UitstallingWeb.DeckLive do
     end
   end
 
+  # Insert a placeholder after the selected slide through the normal commit
+  # path (undo-able, capped by the validator's slide limit), then drop into
+  # the new slide's body editor — same pattern as add_block.
+  def handle_event("add_slide", _params, socket) do
+    %{index: index} = socket.assigns.selected
+    socket = commit(socket, Decks.insert_slide(socket.assigns.raw, index))
+
+    if socket.assigns.edit_error do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(selected: %{index: index + 1, block: "body"}, edit_form: %{})
+       |> push_event("goto_slide", %{index: index + 1})}
+    end
+  end
+
   def handle_event("delete_slide", _params, socket) do
     %{index: index} = socket.assigns.selected
     {:noreply, commit(socket, Decks.delete_slide(socket.assigns.raw, index))}
@@ -949,6 +1111,31 @@ defmodule UitstallingWeb.DeckLive do
         )
 
         {:noreply, socket |> assign(undo: rest) |> load_deck(previous)}
+    end
+  end
+
+  # ----- Theme switch (direct mutation, no model) ---------------------------------
+
+  def handle_event("open_theme", _params, socket) do
+    {:noreply, assign(socket, theme_panel: true, selected: nil)}
+  end
+
+  def handle_event("close_theme", _params, socket) do
+    {:noreply, assign(socket, theme_panel: false)}
+  end
+
+  # Restyle in place through the normal commit path (undo-able, broadcast).
+  # The accent re-pairs with the theme so marks stay legible on the new base.
+  def handle_event("set_theme", %{"theme" => theme}, socket) do
+    if theme in Decks.themes() do
+      new_raw =
+        socket.assigns.raw
+        |> Map.put("theme", theme)
+        |> Map.put("accent", Decks.theme_accent(theme))
+
+      {:noreply, socket |> commit(new_raw) |> assign(theme_panel: false)}
+    else
+      {:noreply, socket}
     end
   end
 
@@ -979,11 +1166,25 @@ defmodule UitstallingWeb.DeckLive do
           )
       end
 
-    {:noreply, assign(socket, regen: base, selected: nil)}
+    {:noreply, assign(socket, regen: base, selected: nil, edit_form: %{})}
   end
 
   def handle_event("close_regen", _params, socket) do
     {:noreply, assign(socket, regen: nil)}
+  end
+
+  # Typed regen fields are server-held, same reason as NewDeckLive's form:
+  # a patch or reconnect re-renders the panel from @regen, so @regen must
+  # carry what's been typed or it gets reset to the prefill.
+  def handle_event("validate_regen", params, socket) do
+    case socket.assigns.regen do
+      nil ->
+        {:noreply, socket}
+
+      regen ->
+        {:noreply,
+         assign(socket, regen: Map.merge(regen, Map.take(params, ~w(prompt voice research))))}
+    end
   end
 
   def handle_event("queue_regen", params, socket) do
@@ -1039,7 +1240,7 @@ defmodule UitstallingWeb.DeckLive do
     prompt = String.trim(prompt)
 
     if prompt == "" do
-      {:noreply, assign(socket, selected: nil)}
+      {:noreply, assign(socket, selected: nil, edit_form: %{})}
     else
       %{index: index, block: block} = socket.assigns.selected
       slide = Enum.at(socket.assigns.deck.slides, index)
@@ -1065,7 +1266,7 @@ defmodule UitstallingWeb.DeckLive do
 
       {:noreply,
        socket
-       |> assign(selected: nil)
+       |> assign(selected: nil, edit_form: %{})
        |> refresh_pending()}
     end
   end
@@ -1111,9 +1312,18 @@ defmodule UitstallingWeb.DeckLive do
 
   # Another session (or the pipeline) changed the deck — reload from the store.
   # LiveView diffing means only the changed parts re-render in the browser.
+  # An open editor stays open: typed state lives in @edit_form, so the
+  # re-render can't eat it. Only a selection whose slide vanished is dropped.
   def handle_info(:deck_updated, socket) do
-    {:noreply,
-     socket |> reload_deck(Decks.load_raw!(socket.assigns.deck_id)) |> assign(selected: nil)}
+    socket = reload_deck(socket, Decks.load_raw!(socket.assigns.deck_id))
+
+    selected =
+      case socket.assigns.selected do
+        %{index: index} = selected when index < length(socket.assigns.deck.slides) -> selected
+        _ -> nil
+      end
+
+    {:noreply, assign(socket, selected: selected)}
   end
 
   def handle_info(:queue_updated, socket) do
@@ -1140,6 +1350,12 @@ defmodule UitstallingWeb.DeckLive do
   defp request_label(%{"type" => "create"}), do: "deck"
   defp request_label(%{"type" => "asset"}), do: "image"
   defp request_label(_request), do: "edit"
+
+  # All editor forms share one typed-state map — their input names don't
+  # collide across forms that are visible together. "_target" is LiveView
+  # bookkeeping, not a field.
+  defp merge_edit_form(socket, params),
+    do: Map.merge(socket.assigns.edit_form, Map.drop(params, ["_target"]))
 
   defp pending_specs(pending) do
     for %{"slide_id" => slide_id} = request <- pending, request["type"] != "create" do
@@ -1232,7 +1448,7 @@ defmodule UitstallingWeb.DeckLive do
         )
 
         socket
-        |> assign(undo: undo, selected: nil, edit_error: nil)
+        |> assign(undo: undo, selected: nil, edit_form: %{}, edit_error: nil)
         |> load_deck(new_raw)
 
       {:error, errors} ->
