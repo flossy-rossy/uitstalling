@@ -116,6 +116,31 @@ defmodule UitstallingWeb.DeckLiveTest do
     assert html =~ "statement"
   end
 
+  test "a save that lost a race refreshes, keeps the typed text, and succeeds on retry",
+       %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/deck/demo")
+    render_hook(view, "toggle_edit", %{})
+    render_hook(view, "select_block", %{"index" => 0, "block" => "heading"})
+
+    # Another writer (pipeline / other tab) lands AFTER this session loaded
+    behind_our_back = put_in(deck_on_disk(), ["slides", Access.at(0), "kicker"], "SNEAKY EDIT")
+    Decks.save!("demo", behind_our_back)
+
+    html = render_hook(view, "save_text", %{"value" => "My new heading"})
+
+    # Conflict surfaced, nothing clobbered, editor still open
+    assert html =~ "The deck changed while you edited"
+    assert html =~ "SNEAKY EDIT"
+    assert html =~ "EDIT SLIDE 1"
+    assert get_in(deck_on_disk(), ["slides", Access.at(0), "kicker"]) == "SNEAKY EDIT"
+
+    # Saving again lands on the refreshed rev — both writers' work survives
+    render_hook(view, "save_text", %{"value" => "My new heading"})
+    slide = hd(deck_on_disk()["slides"])
+    assert slide["heading"] == "My new heading"
+    assert slide["kicker"] == "SNEAKY EDIT"
+  end
+
   test "an open editor survives a background deck update without losing typed text",
        %{conn: conn} do
     {:ok, view, _html} = live(conn, "/deck/demo")

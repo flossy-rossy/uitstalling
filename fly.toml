@@ -31,6 +31,11 @@ kill_signal = 'SIGTERM'
   hard_limit = 1000
   soft_limit = 1000
 
+# 1GB: the BEAM idles ~300MB and the on-demand Chrome that renders PDF
+# exports needs 200-300MB for the seconds it lives — 512MB OOM-killed the
+# render tab every time. Swap is the buffer against image-heavy decks.
+swap_size_mb = 512
+
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '512mb'
+  memory = '1gb'

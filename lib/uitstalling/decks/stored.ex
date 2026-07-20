@@ -9,6 +9,9 @@ defmodule Uitstalling.Decks.Stored do
     field :data, :map
     field :slug, :string
     field :expires_at, :utc_datetime
+    # Optimistic-lock revision (see Decks.save/4) + who wrote last
+    field :rev, :integer, default: 0
+    field :last_actor, :string
 
     belongs_to :user, Uitstalling.Accounts.User
 

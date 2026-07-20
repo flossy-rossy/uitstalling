@@ -161,7 +161,7 @@ defmodule Uitstalling.Decks.DeckWorker do
 
     case Decks.Agent.impl().generate_slide(raw, request, retry) do
       {:ok, slide} ->
-        apply_slide(raw, slide, request, attempt)
+        apply_slide(slide, request, attempt)
 
       {:error, reason} ->
         case repair_errors(reason) do
@@ -171,39 +171,71 @@ defmodule Uitstalling.Decks.DeckWorker do
     end
   end
 
-  defp apply_slide(raw, slide, request, attempt) do
-    case slide_index(raw, request) do
-      nil ->
-        {:error, :slide_not_found}
+  defp apply_slide(slide, request, attempt) do
+    # The model can't attach images itself — it REQUESTS one via an
+    # "image_request" key, popped here so it never reaches the validator.
+    {image_request, slide} =
+      if is_map(slide), do: Map.pop(slide, "image_request"), else: {nil, slide}
 
-      index ->
-        original = Enum.at(raw["slides"], index)
+    result =
+      save_cas(request["deck_id"], fn raw ->
+        case slide_index(raw, request) do
+          nil ->
+            {:error, :slide_not_found}
 
-        # The model can't attach images itself — it REQUESTS one via an
-        # "image_request" key, popped here so it never reaches the validator.
-        {image_request, slide} =
-          if is_map(slide), do: Map.pop(slide, "image_request"), else: {nil, slide}
+          index ->
+            original = Enum.at(raw["slides"], index)
 
-        # The request's slide_id is authoritative — a model that echoes a
-        # different (or duplicate) id must not be able to break addressing.
-        # App-managed keys (e.g. "image") survive every edit the same way:
-        # whatever the model emitted is stripped and the original restored.
-        slide =
-          if is_map(slide),
-            do: slide |> Map.put("id", request["slide_id"]) |> restore_app_keys(original),
-            else: slide
+            # The request's slide_id is authoritative — a model that echoes a
+            # different (or duplicate) id must not be able to break
+            # addressing. App-managed keys (e.g. "image") survive every edit
+            # the same way: whatever the model emitted is stripped and the
+            # CURRENT slide's restored (fresh raw, so an image the author
+            # attached mid-generation survives too).
+            slide =
+              if is_map(slide),
+                do: slide |> Map.put("id", request["slide_id"]) |> restore_app_keys(original),
+                else: slide
 
-        new_raw = put_in(raw, ["slides", Access.at(index)], slide)
+            new_raw = put_in(raw, ["slides", Access.at(index)], slide)
 
-        with :ok <- edit_validation(new_raw, index),
-             :ok <- not_canceled(request) do
-          Decks.save!(request["deck_id"], new_raw)
-          queue_image_request(request, image_request)
-          :ok
-        else
-          {:retry, errors} -> retry_edit(request, errors, slide, attempt)
-          {:error, reason} -> {:error, reason}
+            with :ok <- edit_validation(new_raw, index),
+                 :ok <- not_canceled(request) do
+              {:ok, new_raw}
+            end
         end
+      end)
+
+    case result do
+      :ok ->
+        queue_image_request(request, image_request)
+        :ok
+
+      {:retry, errors} ->
+        retry_edit(request, errors, slide, attempt)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Checkout → transform → conditional save, re-running the transform on
+  # FRESH raw when another writer (an author editing live) landed in
+  # between. The slow model call stays OUTSIDE this loop — only the cheap
+  # splice/validate re-runs.
+  defp save_cas(deck_id, transform, attempts \\ 3) do
+    {raw, rev} = Decks.checkout(deck_id)
+
+    case transform.(raw) do
+      {:ok, new_raw} ->
+        case Decks.save(deck_id, new_raw, rev, "pipeline") do
+          {:ok, _rev} -> :ok
+          {:error, :stale} when attempts > 1 -> save_cas(deck_id, transform, attempts - 1)
+          {:error, :stale} -> {:error, :conflict}
+        end
+
+      other ->
+        other
     end
   end
 
@@ -289,7 +321,7 @@ defmodule Uitstalling.Decks.DeckWorker do
 
             case Decks.Agent.impl().generate_ops(raw, request, retry) do
               {:ok, reply} ->
-                apply_ops(raw, reply, request, index, target, attempt)
+                apply_ops(reply, request, target, attempt)
 
               {:error, reason} ->
                 case repair_errors(reason) do
@@ -301,15 +333,22 @@ defmodule Uitstalling.Decks.DeckWorker do
     end
   end
 
-  defp apply_ops(raw, reply, request, index, target, attempt) do
-    with {:ok, ops} <- Op.parse_batch(reply["ops"], request["slide_id"]),
-         :ok <- check_ops_scope(ops, target),
-         {:ok, new_raw, _applied} <- Op.apply_batch(raw, ops),
-         :ok <- edit_validation(new_raw, index),
-         :ok <- not_canceled(request) do
-      Decks.save!(request["deck_id"], new_raw)
-      :ok
-    else
+  defp apply_ops(reply, request, target, attempt) do
+    result =
+      save_cas(request["deck_id"], fn raw ->
+        with index when is_integer(index) <-
+               slide_index(raw, request) || {:error, :slide_not_found},
+             {:ok, ops} <- Op.parse_batch(reply["ops"], request["slide_id"]),
+             :ok <- check_ops_scope(ops, target),
+             {:ok, new_raw, _applied} <- Op.apply_batch(raw, ops),
+             :ok <- edit_validation(new_raw, index),
+             :ok <- not_canceled(request) do
+          {:ok, new_raw}
+        end
+      end)
+
+    case result do
+      :ok -> :ok
       {:retry, errors} -> retry_ops(request, errors, reply, attempt)
       {:error, errors} when is_list(errors) -> retry_ops(request, errors, reply, attempt)
       {:error, reason} -> {:error, reason}
@@ -561,34 +600,30 @@ defmodule Uitstalling.Decks.DeckWorker do
   # the stored asset stays (harmless, reusable later).
   defp attach(request, asset) do
     with :ok <- not_canceled(request) do
-      raw = Decks.load_raw!(request["deck_id"])
+      save_cas(request["deck_id"], fn raw ->
+        case Enum.find_index(raw["slides"], &(is_map(&1) and &1["id"] == request["slide_id"])) do
+          nil ->
+            {:error, :slide_not_found}
 
-      case Enum.find_index(raw["slides"], &(is_map(&1) and &1["id"] == request["slide_id"])) do
-        nil ->
-          {:error, :slide_not_found}
+          index ->
+            existing = Decks.get_block(raw, index, "image") || %{}
 
-        index ->
-          existing = Decks.get_block(raw, index, "image") || %{}
+            # No visible caption by default — the generation subject lives on
+            # the asset for the editor's regenerate flow, not as a footer. A
+            # caption/treatment the author set on a previous image survives.
+            image =
+              %{"asset_id" => asset.id}
+              |> maybe_keep(existing, "alt")
+              |> maybe_keep(existing, "treatment")
 
-          # No visible caption by default — the generation subject lives on
-          # the asset for the editor's regenerate flow, not as a footer. A
-          # caption/treatment the author set on a previous image survives.
-          image =
-            %{"asset_id" => asset.id}
-            |> maybe_keep(existing, "alt")
-            |> maybe_keep(existing, "treatment")
+            new_raw = Decks.put_block(raw, index, "image", image)
 
-          new_raw = Decks.put_block(raw, index, "image", image)
-
-          case Decks.parse(new_raw) do
-            {:ok, _deck} ->
-              Decks.save!(request["deck_id"], new_raw)
-              :ok
-
-            {:error, errors} ->
-              {:error, {:validation_failed, errors}}
-          end
-      end
+            case Decks.parse(new_raw) do
+              {:ok, _deck} -> {:ok, new_raw}
+              {:error, errors} -> {:error, {:validation_failed, errors}}
+            end
+        end
+      end)
     end
   end
 

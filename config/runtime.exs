@@ -44,7 +44,13 @@ if config_env() != :test do
              on_demand: true,
              # checkout_timeout must absorb the on-demand cold start (Chrome
              # boot + first page) — the 5s default 500s the first download.
-             session_pool: [size: 1, checkout_timeout: 60_000],
+             # init_timeout likewise: a shared-CPU Fly machine can take >5s
+             # just to spawn the session.
+             session_pool: [size: 1, checkout_timeout: 60_000, init_timeout: 30_000],
+             # Containers give /dev/shm ~64MB and Chrome crashes its tab
+             # without this ('Inspector.targetCrashed' on Fly) — render via
+             # /tmp instead. Harmless outside containers.
+             chrome_args: "--disable-dev-shm-usage",
              chrome_executable: System.get_env("CHROME_EXECUTABLE"),
              no_sandbox: System.get_env("CHROME_NO_SANDBOX") in ~w(true 1)
            ],

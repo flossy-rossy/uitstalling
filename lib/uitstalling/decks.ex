@@ -256,6 +256,53 @@ defmodule Uitstalling.Decks do
   end
 
   @doc """
+  The raw doc plus its optimistic-lock revision. Every WRITER loads through
+  this and hands the rev back to `save/4` — readers keep using `load_raw!/1`.
+  """
+  def checkout(deck_id) do
+    stored = Repo.get!(Stored, deck_id)
+    {migrate(stored.data), stored.rev}
+  end
+
+  @doc """
+  Compare-and-swap save: succeeds only while the deck is still at
+  `expected_rev`, bumping the rev and recording the writer (`actor` is a
+  user id or "pipeline"). `{:error, :stale}` means another writer landed
+  since checkout — reload and reconcile; never overwrite blind. The rev is
+  also the future event-log seq (docs/event-log-plan.md).
+  """
+  def save(deck_id, %{} = raw, expected_rev, actor) do
+    raw = migrate(raw)
+    {:ok, _deck} = parse(raw)
+
+    updated =
+      Repo.update_all(
+        from(d in Stored, where: d.id == ^deck_id and d.rev == ^expected_rev),
+        set: [
+          data: raw,
+          rev: expected_rev + 1,
+          last_actor: actor,
+          updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        ]
+      )
+
+    case updated do
+      {1, _} -> {:ok, expected_rev + 1}
+      {0, _} -> {:error, :stale}
+    end
+  end
+
+  @doc "Concurrency metadata: current rev plus who wrote last and when."
+  def deck_meta(deck_id) do
+    Repo.one(
+      from(d in Stored,
+        where: d.id == ^deck_id,
+        select: %{rev: d.rev, last_actor: d.last_actor, updated_at: d.updated_at}
+      )
+    )
+  end
+
+  @doc """
   Upgrade a stored raw deck map to the current document version. Pure and
   idempotent; applied on every load and before every save, so documents
   written under older rules converge instead of failing a tightened validator.
@@ -334,15 +381,24 @@ defmodule Uitstalling.Decks do
     raw
   end
 
-  @doc "Persist changes to an existing deck. Refuses anything that doesn't validate."
-  def save!(deck_id, %{} = raw) do
+  @doc """
+  Force-persist changes, bypassing the optimistic lock (the rev still
+  bumps). For wholesale replacement — deck create/regenerate — and tests;
+  incremental edits go through `checkout/1` + `save/4`.
+  """
+  def save!(deck_id, %{} = raw, actor \\ "system") do
     raw = migrate(raw)
     {:ok, _deck} = parse(raw)
 
     {1, _} =
       Repo.update_all(
         from(d in Stored, where: d.id == ^deck_id),
-        set: [data: raw, updated_at: DateTime.utc_now() |> DateTime.truncate(:second)]
+        set: [
+          data: raw,
+          last_actor: actor,
+          updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        ],
+        inc: [rev: 1]
       )
 
     raw

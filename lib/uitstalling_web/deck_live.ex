@@ -72,7 +72,7 @@ defmodule UitstallingWeb.DeckLive do
 
   defp mount_deck(deck_id, socket, base_path) do
     with true <- Decks.exists?(deck_id),
-         raw = Decks.load_raw!(deck_id),
+         {raw, rev} = Decks.checkout(deck_id),
          # Lenient on purpose: a stored deck can stop validating without
          # anyone editing it (e.g. a referenced asset was deleted). That must
          # degrade to a flash, not a 500 that bricks the deck.
@@ -89,6 +89,10 @@ defmodule UitstallingWeb.DeckLive do
           topic: "deck:#{deck_id}",
           page_title: deck.title,
           raw: raw,
+          # Optimistic-lock revision this session last saw — every commit
+          # hands it to Decks.save/4 so a concurrent write surfaces instead
+          # of being overwritten.
+          rev: rev,
           deck: deck,
           index: 0,
           can_edit: can_edit,
@@ -1552,16 +1556,35 @@ defmodule UitstallingWeb.DeckLive do
         {:noreply, socket}
 
       [previous | rest] ->
-        Decks.save!(socket.assigns.deck_id, previous)
+        case Decks.save(
+               socket.assigns.deck_id,
+               previous,
+               socket.assigns.rev,
+               socket.assigns.current_user.id
+             ) do
+          {:ok, rev} ->
+            Phoenix.PubSub.broadcast_from(
+              Uitstalling.PubSub,
+              self(),
+              socket.assigns.topic,
+              :deck_updated
+            )
 
-        Phoenix.PubSub.broadcast_from(
-          Uitstalling.PubSub,
-          self(),
-          socket.assigns.topic,
-          :deck_updated
-        )
+            {:noreply, socket |> assign(undo: rest, rev: rev) |> load_deck(previous)}
 
-        {:noreply, socket |> assign(undo: rest) |> load_deck(previous)}
+          {:error, :stale} ->
+            # The deck moved on since this session's snapshot — undoing over
+            # someone else's change would eat it. Refresh; the stack stays.
+            {fresh, rev} = Decks.checkout(socket.assigns.deck_id)
+
+            {:noreply,
+             socket
+             |> assign(
+               rev: rev,
+               edit_error: "The deck changed underneath — undo aborted, showing the latest."
+             )
+             |> load_deck(fresh)}
+        end
     end
   end
 
@@ -1766,7 +1789,8 @@ defmodule UitstallingWeb.DeckLive do
   # An open editor stays open: typed state lives in @edit_form, so the
   # re-render can't eat it. Only a selection whose slide vanished is dropped.
   def handle_info(:deck_updated, socket) do
-    socket = reload_deck(socket, Decks.load_raw!(socket.assigns.deck_id))
+    {fresh, rev} = Decks.checkout(socket.assigns.deck_id)
+    socket = socket |> assign(rev: rev) |> reload_deck(fresh)
 
     selected =
       case socket.assigns.selected do
@@ -1948,25 +1972,47 @@ defmodule UitstallingWeb.DeckLive do
   defp list_placeholder("rows", slide),
     do: List.duplicate("…", length(slide["columns"] || []))
 
-  # Validate -> snapshot for undo -> persist -> tell other views. A mutation
-  # that breaks the schema (deleting a required part, the last slide) is
-  # rejected by the same validator that polices the model.
+  # Validate -> snapshot for undo -> conditional save -> tell other views.
+  # A mutation that breaks the schema (deleting a required part, the last
+  # slide) is rejected by the same validator that polices the model. A save
+  # that lost a race (pipeline result, another tab) surfaces as a refresh +
+  # message — the typed text survives in @edit_form, so recovery is saving
+  # again.
   defp commit(socket, new_raw) do
     case Decks.parse(new_raw) do
       {:ok, _deck} ->
-        undo = Enum.take([socket.assigns.raw | socket.assigns.undo], @undo_depth)
-        Decks.save!(socket.assigns.deck_id, new_raw)
+        case Decks.save(
+               socket.assigns.deck_id,
+               new_raw,
+               socket.assigns.rev,
+               socket.assigns.current_user.id
+             ) do
+          {:ok, rev} ->
+            undo = Enum.take([socket.assigns.raw | socket.assigns.undo], @undo_depth)
 
-        Phoenix.PubSub.broadcast_from(
-          Uitstalling.PubSub,
-          self(),
-          socket.assigns.topic,
-          :deck_updated
-        )
+            Phoenix.PubSub.broadcast_from(
+              Uitstalling.PubSub,
+              self(),
+              socket.assigns.topic,
+              :deck_updated
+            )
 
-        socket
-        |> assign(undo: undo, selected: nil, edit_form: %{}, edit_error: nil)
-        |> load_deck(new_raw)
+            socket
+            |> assign(undo: undo, rev: rev, selected: nil, edit_form: %{}, edit_error: nil)
+            |> load_deck(new_raw)
+
+          {:error, :stale} ->
+            {fresh, rev} = Decks.checkout(socket.assigns.deck_id)
+
+            socket
+            |> assign(
+              rev: rev,
+              edit_error:
+                "The deck changed while you edited — refreshed to the latest. " <>
+                  "Your text is still in the editor; save again."
+            )
+            |> load_deck(fresh)
+        end
 
       {:error, errors} ->
         assign(socket, edit_error: "Can't do that: #{hd(errors)}")

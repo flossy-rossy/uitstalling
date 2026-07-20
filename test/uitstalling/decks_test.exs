@@ -339,6 +339,31 @@ defmodule Uitstalling.DecksTest do
     assert {:ok, _} = Decks.parse(without_src)
   end
 
+  test "save/4 is a compare-and-swap: stale revs lose, actors are recorded" do
+    {raw, rev} = Decks.checkout("demo")
+    assert rev == 0
+
+    edited = put_in(raw, ["slides", Access.at(0), "heading"], "First writer wins")
+    assert {:ok, 1} = Decks.save("demo", edited, rev, "user-a")
+
+    # A second writer holding the old rev must not clobber the first
+    other = put_in(raw, ["slides", Access.at(0), "heading"], "Second writer")
+    assert {:error, :stale} = Decks.save("demo", other, rev, "user-b")
+
+    assert Decks.load_raw!("demo") |> get_in(["slides", Access.at(0), "heading"]) ==
+             "First writer wins"
+
+    assert %{rev: 1, last_actor: "user-a"} = Decks.deck_meta("demo")
+
+    # Checkout again → save succeeds at the new rev
+    {fresh, 1} = Decks.checkout("demo")
+    assert {:ok, 2} = Decks.save("demo", fresh, 1, "user-b")
+
+    # Force-save (wholesale replace) bypasses the lock but still bumps
+    Decks.save!("demo", fresh)
+    assert %{rev: 3, last_actor: "system"} = Decks.deck_meta("demo")
+  end
+
   test "insert_slide adds a valid placeholder with a fresh id" do
     raw = %{
       "title" => "T",
