@@ -2,19 +2,23 @@ import Config
 
 # Generation agent — provider-agnostic on purpose: the API key only
 # authenticates; the model is a per-request parameter, so all three are
-# swappable without code changes.
-config :uitstalling,
-  agent_api_key: System.get_env("AGENT_API_KEY"),
-  agent_model: System.get_env("AGENT_MODEL") || "claude-haiku-4-5",
-  agent_base_url: System.get_env("AGENT_BASE_URL") || "https://api.anthropic.com",
-  agent_app_url: System.get_env("AGENT_APP_URL")
+# swappable without code changes. Never read in test: a test run must be
+# hermetic, not inherit whatever AGENT_*/IMAGE_* the host shell exports
+# (config/test.exs pins the test values).
+if config_env() != :test do
+  config :uitstalling,
+    agent_api_key: System.get_env("AGENT_API_KEY"),
+    agent_model: System.get_env("AGENT_MODEL") || "claude-haiku-4-5",
+    agent_base_url: System.get_env("AGENT_BASE_URL") || "https://api.anthropic.com",
+    agent_app_url: System.get_env("AGENT_APP_URL")
 
-# Image generation (OpenRouter's unified Image API). IMAGE_API_KEY may be
-# omitted when AGENT_API_KEY is already an OpenRouter key.
-config :uitstalling,
-  image_api_key: System.get_env("IMAGE_API_KEY"),
-  image_model: System.get_env("IMAGE_MODEL") || "bytedance-seed/seedream-4.5",
-  image_base_url: System.get_env("IMAGE_BASE_URL") || "https://openrouter.ai/api/v1"
+  # Image generation (OpenRouter's unified Image API). IMAGE_API_KEY may be
+  # omitted when AGENT_API_KEY is already an OpenRouter key.
+  config :uitstalling,
+    image_api_key: System.get_env("IMAGE_API_KEY"),
+    image_model: System.get_env("IMAGE_MODEL") || "bytedance-seed/seedream-4.5",
+    image_base_url: System.get_env("IMAGE_BASE_URL") || "https://openrouter.ai/api/v1"
+end
 
 # Asset storage: Tigris (Fly's S3) when a bucket is configured —
 # `fly storage create` injects BUCKET_NAME + AWS_* into the app env.

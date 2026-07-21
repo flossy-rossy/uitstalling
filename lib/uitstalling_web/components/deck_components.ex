@@ -108,6 +108,39 @@ defmodule UitstallingWeb.DeckComponents do
 
   defp light_theme?(theme), do: theme_base(theme).light
 
+  @doc """
+  Palette for the phone remote, so it wears the theme of the deck it drives:
+  the theme's base colours plus the deck accent (deep variants on light
+  themes, same contrast rule as slides).
+  """
+  def remote_palette(theme, accent) do
+    base = theme_base(theme)
+
+    accent_text =
+      if base.light,
+        do: @accent_text_deep[accent] || @accent_text_deep["amber"],
+        else: @accent_text[accent] || @accent_text["amber"]
+
+    %{
+      bg: base.bg,
+      muted: base.muted,
+      faint: base.faint,
+      accent_text: accent_text,
+      accent_button:
+        "#{@accent_bg[accent] || @accent_bg["amber"]} text-zinc-950 active:opacity-80",
+      card:
+        if(base.light,
+          do: "bg-white/40 ring-1 ring-zinc-900/10",
+          else: "bg-white/5 ring-1 ring-white/10"
+        ),
+      button:
+        if(base.light,
+          do: "bg-zinc-900/10 active:bg-zinc-900/20",
+          else: "bg-white/10 active:bg-white/20"
+        )
+    }
+  end
+
   defp tone_bg("default", theme, _accent), do: theme_base(theme).bg
   defp tone_bg("accent", _theme, accent), do: "#{@accent_bg[accent]} text-zinc-950"
   defp tone_bg("danger", _theme, _accent), do: "bg-red-950 text-red-50"

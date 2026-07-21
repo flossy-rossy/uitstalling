@@ -1,6 +1,8 @@
 defmodule Uitstalling.AccountsTest do
   use Uitstalling.DataCase, async: false
 
+  import Uitstalling.Fixtures, only: [user_fixture: 0, credential_fixture: 1]
+
   alias Uitstalling.Accounts
 
   # The test allowlist is empty (= open); pin a closed one per test.
@@ -39,5 +41,43 @@ defmodule Uitstalling.AccountsTest do
     assert {:ok, user} = Accounts.register_user("anyone@example.com")
     assert user.name == nil
     assert Accounts.can_author?(user)
+
+    # An abandoned first ceremony (no passkey yet) may simply retry
+    assert {:ok, retry} = Accounts.register_user("anyone@example.com")
+    assert retry.id == user.id
+  end
+
+  test "registering a passkey consumes the invite; another passkey needs a fresh invite" do
+    Accounts.invite_user("friend@example.com", "Sam")
+    assert %{} = Accounts.unclaimed_invite("friend@example.com")
+
+    {:ok, user} = Accounts.register_user("friend@example.com")
+    credential_fixture(user)
+    Accounts.claim_invites(user)
+
+    assert Accounts.unclaimed_invite("friend@example.com") == nil
+    refute Accounts.may_register_credential?(user)
+    assert {:error, :invite_required} = Accounts.register_user("friend@example.com")
+
+    # Recovery = re-invite: reopens registration for the same account
+    Accounts.invite_user("friend@example.com", "Sam")
+    assert Accounts.may_register_credential?(user)
+    assert {:ok, again} = Accounts.register_user("friend@example.com")
+    assert again.id == user.id
+  end
+
+  test "knowing a registered email is not enough to add a passkey, even in open mode" do
+    user = user_fixture()
+    credential_fixture(user)
+
+    refute Accounts.may_register_credential?(user)
+    assert {:error, :invite_required} = Accounts.register_user(user.email)
+  end
+
+  test "re-inviting never stacks a second live invite" do
+    Accounts.invite_user("friend@example.com", "Sam")
+    Accounts.invite_user("friend@example.com", "Samantha")
+
+    assert Repo.aggregate(Uitstalling.Accounts.Invite, :count) == 1
   end
 end

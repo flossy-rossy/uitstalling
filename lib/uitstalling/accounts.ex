@@ -3,13 +3,16 @@ defmodule Uitstalling.Accounts do
   Users + the closed-beta authorship gate.
 
   During the closed beta, only allowlisted emails (`:allowed_emails` config)
-  may register a passkey and author decks. An empty allowlist means open
-  (the future public mode). Presenting is always public — no user needed.
+  and invited emails may register a passkey and author decks. An empty
+  allowlist means open (the future public mode). Either way, each passkey
+  registration consumes a single-use invite when one exists, and an account
+  that already has a passkey can only add another via a fresh invite.
+  Presenting is always public — no user needed.
   """
 
   import Ecto.Query
 
-  alias Uitstalling.Accounts.User
+  alias Uitstalling.Accounts.{Invite, User, WebauthnCredential}
   alias Uitstalling.Repo
   alias Uitstalling.Slug
 
@@ -49,41 +52,102 @@ defmodule Uitstalling.Accounts do
       fly ssh console --pty -C "/app/bin/uitstalling remote"
       iex> Uitstalling.Accounts.invite_user("friend@example.com", "Sam")
 
-  An invited row is also an authorization: the email may register a passkey
-  regardless of the AUTHOR_EMAILS allowlist.
+  Inviting mints a single-use `Invite` (see `Uitstalling.Accounts.Invite`)
+  that registering a passkey will claim, regardless of the AUTHOR_EMAILS
+  allowlist. Re-inviting someone who lost their passkey is the recovery flow:
+  it mints a fresh invite so they can register a new one.
   """
   def invite_user(email, name) when is_binary(name) do
     email = normalize_email(email)
 
-    case get_user_by_email(email) do
-      nil ->
-        Repo.insert!(%User{email: email, name: name, anonymous: false})
+    user =
+      case get_user_by_email(email) do
+        nil ->
+          Repo.insert!(%User{email: email, name: name, anonymous: false})
 
-      user ->
-        user |> Ecto.Changeset.change(name: name, anonymous: false) |> Repo.update!()
+        user ->
+          user |> Ecto.Changeset.change(name: name, anonymous: false) |> Repo.update!()
+      end
+      |> ensure_slug!()
+
+    unless unclaimed_invite(email) do
+      Repo.insert!(%Invite{email: email, name: name})
     end
-    |> ensure_slug!()
+
+    user
   end
 
   @doc """
-  Find or create a registered user at passkey registration. An existing row
-  (an invite, or a returning user) always wins — its stored name is kept.
-  Otherwise the email must pass the allowlist.
+  Find or create the user a passkey registration ceremony is for. Does not
+  consume anything — `claim_invites/1` runs after the passkey is verified.
+
+    * an account that already has a passkey needs a live invite to add
+      another (`{:error, :invite_required}` otherwise — recovery is a
+      re-invite, not open season on any known email)
+    * a passkey-less account (a pending invite, or an abandoned first
+      ceremony) may proceed with an invite or via the allowlist
+    * a brand-new email needs an invite or the allowlist (empty list = open)
   """
   def register_user(email, name \\ nil) do
     email = normalize_email(email)
+    user = get_user_by_email(email)
+    invite = unclaimed_invite(email)
 
     cond do
-      user = get_user_by_email(email) ->
+      user && may_register_credential?(user) ->
         {:ok, ensure_slug!(user)}
 
-      allowed_email?(email) ->
+      user ->
+        {:error, :invite_required}
+
+      invite || allowed_email?(email) ->
+        name = name || (invite && invite.name)
         {:ok, ensure_slug!(Repo.insert!(%User{email: email, name: name, anonymous: false}))}
 
       true ->
         {:error, :not_allowed}
     end
   end
+
+  @doc """
+  Whether `user` may register a (new) passkey right now: a live invite always
+  authorizes it; without one only a first passkey is allowed, and only via
+  the allowlist. Re-checked when the ceremony completes, so an invite claimed
+  mid-ceremony (or a passkey added from another tab) closes the door.
+  """
+  def may_register_credential?(%User{} = user) do
+    cond do
+      unclaimed_invite(user.email) -> true
+      has_credentials?(user) -> false
+      true -> allowed_email?(user.email)
+    end
+  end
+
+  @doc """
+  Claim the live invite for `user`'s email after a passkey was successfully
+  registered. A no-op when registration was authorized by the allowlist.
+  """
+  def claim_invites(%User{} = user) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    from(i in Invite, where: i.email == ^user.email and is_nil(i.claimed_at))
+    |> Repo.update_all(set: [claimed_at: now, claimed_by_id: user.id, updated_at: now])
+  end
+
+  @doc "Whether the user has at least one registered passkey."
+  def has_credentials?(%User{id: id}) do
+    Repo.exists?(from c in WebauthnCredential, where: c.user_id == ^id)
+  end
+
+  @doc "The live (unclaimed) invite for an email, or nil."
+  def unclaimed_invite(email) when is_binary(email) do
+    Repo.one(
+      from i in Invite,
+        where: i.email == ^normalize_email(email) and is_nil(i.claimed_at)
+    )
+  end
+
+  def unclaimed_invite(_), do: nil
 
   @doc "Whether an email may register via the allowlist (empty list = open)."
   def allowed_email?(email) when is_binary(email) do

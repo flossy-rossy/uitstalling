@@ -2,7 +2,8 @@ defmodule UitstallingWeb.DeckRemoteLive do
   @moduledoc """
   Phone remote + presenter view for a deck: prev/next buttons, position,
   and the current slide's speaker notes. Drives every connected viewer of
-  the same deck over PubSub.
+  the same deck over PubSub — which is exactly why it's owner-only: viewing
+  is public-by-link, but only the deck's owner may steer everyone's slides.
   """
 
   use UitstallingWeb, :live_view
@@ -10,39 +11,57 @@ defmodule UitstallingWeb.DeckRemoteLive do
   alias Uitstalling.Accounts
   alias Uitstalling.Decks
   alias Uitstalling.Decks.Slide
+  alias UitstallingWeb.DeckComponents
 
   def mount(%{"user_slug" => user_slug, "deck_slug" => deck_slug}, _session, socket) do
     with %{} = owner <- Accounts.get_user_by_slug(user_slug),
          deck_id when is_binary(deck_id) <- Decks.deck_id_for(owner.id, deck_slug) do
-      mount_remote(deck_id, socket)
+      mount_remote(deck_id, socket, "/#{user_slug}/#{deck_slug}")
     else
       _ -> {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
     end
   end
 
   def mount(%{"id" => deck_id}, _session, socket) do
-    mount_remote(deck_id, socket)
+    mount_remote(deck_id, socket, "/deck/#{deck_id}")
   end
 
-  defp mount_remote(deck_id, socket) do
-    if Decks.exists?(deck_id) do
-      deck = Decks.deck!(deck_id)
-      topic = "deck:#{deck_id}"
+  defp mount_remote(deck_id, socket, base_path) do
+    user = socket.assigns.current_user
 
-      if connected?(socket) do
-        Phoenix.PubSub.subscribe(Uitstalling.PubSub, topic)
-      end
+    cond do
+      not Decks.exists?(deck_id) ->
+        {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
 
-      {:ok,
-       assign(socket,
-         deck_id: deck_id,
-         topic: topic,
-         page_title: "Remote · #{deck.title}",
-         deck: deck,
-         index: 0
-       )}
-    else
-      {:ok, socket |> put_flash(:error, "No such presentation") |> redirect(to: ~p"/")}
+      is_nil(user) ->
+        {:ok,
+         socket
+         |> put_flash(:error, "Sign in to use the remote")
+         |> redirect(to: ~p"/auth/login?return_to=#{base_path <> "/remote"}")}
+
+      not (Accounts.can_author?(user) and Decks.owned_by?(deck_id, user.id)) ->
+        {:ok,
+         socket
+         |> put_flash(:error, "Only this deck's presenter can use the remote")
+         |> redirect(to: base_path)}
+
+      true ->
+        deck = Decks.deck!(deck_id)
+        topic = "deck:#{deck_id}"
+
+        if connected?(socket) do
+          Phoenix.PubSub.subscribe(Uitstalling.PubSub, topic)
+        end
+
+        {:ok,
+         assign(socket,
+           deck_id: deck_id,
+           topic: topic,
+           page_title: "Remote · #{deck.title}",
+           deck: deck,
+           palette: DeckComponents.remote_palette(deck.theme, deck.accent),
+           index: 0
+         )}
     end
   end
 
@@ -50,19 +69,23 @@ defmodule UitstallingWeb.DeckRemoteLive do
     assigns = assign(assigns, :slide, Enum.at(assigns.deck.slides, assigns.index))
 
     ~H"""
-    <main class="min-h-dvh bg-zinc-950 text-zinc-100 flex flex-col p-6">
+    <main class={["min-h-dvh flex flex-col p-6", @palette.bg]}>
       <header>
-        <p class="font-mono text-amber-400 text-xs tracking-wider">REMOTE · {@deck.title}</p>
-        <p class="mt-2 font-mono text-zinc-500 text-sm">{@index + 1} / {length(@deck.slides)}</p>
+        <p class={["font-mono text-xs tracking-wider", @palette.accent_text]}>
+          REMOTE · {@deck.title}
+        </p>
+        <p class={["mt-2 font-mono text-sm", @palette.faint]}>
+          {@index + 1} / {length(@deck.slides)}
+        </p>
       </header>
 
       <section class="flex-1 mt-8">
-        <p class="font-mono text-zinc-600 text-xs mb-2 uppercase">{@slide.layout}</p>
+        <p class={["font-mono text-xs mb-2 uppercase", @palette.faint]}>{@slide.layout}</p>
         <p class="text-2xl font-semibold leading-snug">{slide_label(@slide)}</p>
 
-        <div :if={@slide.notes} class="mt-6 p-4 bg-zinc-900 rounded-lg ring-1 ring-zinc-800">
-          <p class="font-mono text-xs text-amber-400 mb-2">NOTES</p>
-          <p class="text-zinc-300 leading-relaxed">{@slide.notes}</p>
+        <div :if={@slide.notes} class={["mt-6 p-4 rounded-lg", @palette.card]}>
+          <p class={["font-mono text-xs mb-2", @palette.accent_text]}>NOTES</p>
+          <p class={["leading-relaxed", @palette.muted]}>{@slide.notes}</p>
         </div>
       </section>
 
@@ -70,14 +93,14 @@ defmodule UitstallingWeb.DeckRemoteLive do
         <button
           phx-click="step"
           phx-value-dir="-1"
-          class="py-12 rounded-xl bg-zinc-800 text-3xl font-bold active:bg-zinc-700"
+          class={["py-12 rounded-xl text-3xl font-bold", @palette.button]}
         >
           ←
         </button>
         <button
           phx-click="step"
           phx-value-dir="1"
-          class="py-12 rounded-xl bg-amber-500 text-zinc-950 text-3xl font-bold active:bg-amber-400"
+          class={["py-12 rounded-xl text-3xl font-bold", @palette.accent_button]}
         >
           →
         </button>
@@ -108,11 +131,18 @@ defmodule UitstallingWeb.DeckRemoteLive do
     {:noreply, assign(socket, index: index)}
   end
 
-  # The deck was edited — reload it so labels/notes stay accurate.
+  # The deck was edited — reload it so labels/notes (and the theme the
+  # remote wears) stay accurate.
   def handle_info(:deck_updated, socket) do
     deck = Decks.deck!(socket.assigns.deck_id)
     index = min(socket.assigns.index, length(deck.slides) - 1)
-    {:noreply, assign(socket, deck: deck, index: index)}
+
+    {:noreply,
+     assign(socket,
+       deck: deck,
+       palette: DeckComponents.remote_palette(deck.theme, deck.accent),
+       index: index
+     )}
   end
 
   def handle_info(:queue_updated, socket), do: {:noreply, socket}

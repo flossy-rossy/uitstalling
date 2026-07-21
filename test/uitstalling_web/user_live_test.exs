@@ -33,7 +33,15 @@ defmodule UitstallingWeb.UserLiveTest do
     assert deck_html =~ "Phishing in 2026."
     assert deck_html =~ "/#{user.slug}/#{slug}/remote"
 
-    {:ok, _view, remote_html} = live(build_conn(), "/#{user.slug}/#{slug}/remote")
+    # The remote is owner-only: anonymous visitors are sent to sign in,
+    # the signed-in owner gets the remote
+    assert {:error, {:redirect, %{to: login}}} =
+             live(build_conn(), "/#{user.slug}/#{slug}/remote")
+
+    assert login =~ "/auth/login?return_to="
+
+    owner = Plug.Test.init_test_session(build_conn(), %{"user_id" => user.id})
+    {:ok, _view, remote_html} = live(owner, "/#{user.slug}/#{slug}/remote")
     assert remote_html =~ "REMOTE"
 
     # Pre-slug style: raw deck id in the slug position keeps working

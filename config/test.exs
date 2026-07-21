@@ -72,3 +72,14 @@ config :uitstalling, :image_gen_timeout, 500
 config :uitstalling, :req_options,
   plug: {Req.Test, Uitstalling.ProviderStub},
   retry_delay: 0
+
+# Pinned agent/image endpoints — runtime.exs skips the AGENT_*/IMAGE_* env
+# reads in test, so the host shell can never steer what the wire clients
+# compose (requests are intercepted by the stub plug above regardless).
+config :uitstalling,
+  agent_api_key: nil,
+  agent_model: "claude-haiku-4-5",
+  agent_base_url: "https://api.anthropic.com",
+  image_api_key: nil,
+  image_model: "bytedance-seed/seedream-4.5",
+  image_base_url: "https://openrouter.ai/api/v1"

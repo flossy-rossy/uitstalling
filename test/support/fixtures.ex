@@ -11,6 +11,18 @@ defmodule Uitstalling.Fixtures do
     user
   end
 
+  @doc "Attach a passkey credential row to a user (no real WebAuthn ceremony)."
+  def credential_fixture(user) do
+    %Uitstalling.Accounts.WebauthnCredential{}
+    |> Uitstalling.Accounts.WebauthnCredential.changeset(%{
+      user_id: user.id,
+      credential_id: :crypto.strong_rand_bytes(16),
+      public_key: %{1 => 2, 3 => -7},
+      rp_id: "localhost"
+    })
+    |> Uitstalling.Repo.insert!()
+  end
+
   @doc "Seed the shipped demo deck under id \"demo\", owned by a fresh author."
   def demo_deck_fixture do
     user = user_fixture()

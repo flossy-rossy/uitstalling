@@ -15,11 +15,14 @@ defmodule UitstallingWeb.AuthController do
 
   @challenge_key "webauthn_challenge"
   @register_user_key "webauthn_register_user_id"
+  @return_to_key "user_return_to"
 
   # ----- Pages ------------------------------------------------------------
 
-  def login_page(conn, _params) do
-    render(conn, :login, layout: false, page_title: "Sign in")
+  def login_page(conn, params) do
+    conn
+    |> maybe_store_return_to(params["return_to"])
+    |> render(:login, layout: false, page_title: "Sign in")
   end
 
   def signup_page(conn, _params) do
@@ -49,6 +52,12 @@ defmodule UitstallingWeb.AuthController do
 
       {:error, :not_allowed} ->
         error_json(conn, "That email isn't on the invite list.")
+
+      {:error, :invite_required} ->
+        error_json(
+          conn,
+          "This account already has a passkey — sign in with it, or ask for a new invite to add another."
+        )
     end
   end
 
@@ -58,8 +67,13 @@ defmodule UitstallingWeb.AuthController do
 
     with %Wax.Challenge{} <- challenge,
          %User{} <- user,
+         # Re-checked here, not just at begin: the ceremony window is minutes
+         # long, and the invite may have been claimed by another ceremony.
+         true <- Accounts.may_register_credential?(user),
          {:ok, _cred} <-
            WebAuthn.verify_registration(user, credential, challenge, label: params["label"]) do
+      Accounts.claim_invites(user)
+
       conn
       |> clear_ceremony_session()
       |> UserAuth.log_in_user(user)
@@ -87,10 +101,13 @@ defmodule UitstallingWeb.AuthController do
     with %Wax.Challenge{} <- challenge,
          {:ok, %User{} = user} <- WebAuthn.verify_authentication(credential, challenge),
          true <- Accounts.can_author?(user) do
+      return_to = get_session(conn, @return_to_key) || ~p"/"
+
       conn
       |> clear_ceremony_session()
+      |> delete_session(@return_to_key)
       |> UserAuth.log_in_user(user)
-      |> json(%{ok: true, redirect: ~p"/"})
+      |> json(%{ok: true, redirect: return_to})
     else
       _ -> conn |> clear_ceremony_session() |> error_json("Authentication failed")
     end
@@ -105,6 +122,18 @@ defmodule UitstallingWeb.AuthController do
     |> delete_session(@challenge_key)
     |> delete_session(@register_user_key)
   end
+
+  # Only same-app paths — an absolute URL or protocol-relative "//host" in
+  # ?return_to= must never turn the login page into an open redirect.
+  defp maybe_store_return_to(conn, "/" <> _ = path) do
+    if String.starts_with?(path, "//") do
+      conn
+    else
+      put_session(conn, @return_to_key, path)
+    end
+  end
+
+  defp maybe_store_return_to(conn, _), do: conn
 
   defp error_json(conn, message) do
     conn |> put_status(:unprocessable_entity) |> json(%{error: message})

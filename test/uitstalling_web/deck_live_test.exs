@@ -398,6 +398,48 @@ defmodule UitstallingWeb.DeckLiveTest do
     refute html =~ "==authData=="
   end
 
+  test "the remote requires signing in", %{conn: _conn} do
+    assert {:error, {:redirect, %{to: to}}} = live(build_conn(), "/deck/demo/remote")
+    assert to =~ "/auth/login?return_to="
+  end
+
+  test "the remote refuses a signed-in non-owner", %{conn: _conn} do
+    other = Uitstalling.Fixtures.user_fixture()
+    visitor = Plug.Test.init_test_session(build_conn(), %{"user_id" => other.id})
+
+    assert {:error, {:redirect, %{to: "/deck/demo"}}} = live(visitor, "/deck/demo/remote")
+  end
+
+  test "a public viewer's arrow keys navigate locally, never the room", %{conn: conn} do
+    Phoenix.PubSub.subscribe(Uitstalling.PubSub, "deck:demo")
+
+    {:ok, viewer, _html} = live(build_conn(), "/deck/demo")
+    render_hook(viewer, "nav", %{"dir" => 1})
+    assert render(viewer) =~ "2 / 11"
+    refute_receive {:goto, _}
+
+    {:ok, owner, _html} = live(conn, "/deck/demo")
+    render_hook(owner, "nav", %{"dir" => 1})
+    assert_receive {:goto, 1}
+  end
+
+  test "the remote wears the deck's theme", %{conn: conn} do
+    {:ok, remote, html} = live(conn, "/deck/demo/remote")
+
+    # The demo deck is noir/amber: dark base, amber accent on the header
+    assert html =~ "bg-zinc-950"
+    assert html =~ "text-amber-400"
+
+    # Restyle the deck — the remote follows on the :deck_updated broadcast
+    raw = deck_on_disk() |> Map.put("theme", "midnight") |> Map.put("accent", "cyan")
+    Decks.save!("demo", raw)
+    Phoenix.PubSub.broadcast(Uitstalling.PubSub, "deck:demo", :deck_updated)
+
+    themed = render(remote)
+    assert themed =~ "text-cyan-400"
+    refute themed =~ "text-amber-400"
+  end
+
   test "keyboard nav broadcasts to the remote", %{conn: conn} do
     {:ok, deck, _html} = live(conn, "/deck/demo")
     {:ok, remote, _html} = live(conn, "/deck/demo/remote")

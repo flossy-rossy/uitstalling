@@ -184,11 +184,14 @@ defmodule Uitstalling.Decks.Agent.Context do
       made literal; never an abstract collage). The app generates it; you
       only describe it.
     - You may add "image_request" to UP TO TWO more slides — spend them on
-      the moments where showing beats telling (the product, the patient, the
-      place, the before/after). For non-technical audiences, lean visual;
-      for technical audiences, prefer a flow or table over a picture.
+      the moments where showing beats telling (the product, the place, the
+      before/after). For non-technical audiences, lean visual; for technical
+      audiences, prefer a flow or table over a picture.
     - Subjects must be concrete and specific to THIS slide's idea, never
-      decorative filler.
+      decorative filler. NEVER request people, faces, hands, or crowds, and
+      never a photorealistic scene — the generator renders those poorly.
+      Depict the object, the place, or the metaphor instead (the empty
+      waiting-room chair, not the patient).
 
     Quality bar — what separates a good deck from filler:
     - Slides are not essays: short, punchy lines; at most ~5 bullets on a
@@ -306,7 +309,10 @@ defmodule Uitstalling.Decks.Agent.Context do
 
     A 16:9 visual for one slide of a presentation titled "#{raw["title"]}".
     #{slide_context}#{voice}Style: #{direction}; modern, minimal, high contrast; \
-    no embedded text or captions unless the subject explicitly asks for them.
+    stylized and graphic — bold editorial illustration, never photorealism. \
+    NEVER depict people, faces, or hands; render human subjects through \
+    objects, environments, or visual metaphor instead. \
+    No embedded text or captions unless the subject explicitly asks for them.
     """
   end
 

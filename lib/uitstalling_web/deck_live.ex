@@ -1206,8 +1206,11 @@ defmodule UitstallingWeb.DeckLive do
 
   # ----- Navigation ---------------------------------------------------------
 
+  # Only the presenter's keyboard drives the room — a public viewer's arrow
+  # keys navigate their own copy quietly.
   def handle_event("nav", %{"dir" => dir}, socket) do
-    {:noreply, goto(socket, socket.assigns.index + dir, :broadcast)}
+    mode = if socket.assigns.can_edit, do: :broadcast, else: :quiet
+    {:noreply, goto(socket, socket.assigns.index + dir, mode)}
   end
 
   # ----- PDF download -----------------------------------------------------------
