@@ -54,6 +54,12 @@ config :uitstalling, :webauthn,
 # Empty allowlist in tests = open (fixtures create registered users freely).
 config :uitstalling, allowed_emails: []
 
+# Deterministic writing-vault key ring; a second retired entry so rotation
+# has something to rotate from in tests.
+config :uitstalling,
+       :writing_master_keys,
+       "t2:DrHc6XsbTCCkZ2TmZUsGsW1Q97mNxbuFfSN25D31oww=,t1:s9+JKJWMM6j9tYCJ87lN0YoyYg8atGxxJSNg0SXK6wk="
+
 # Asset uploads land in a throwaway dir; tests clean it themselves.
 config :uitstalling, :asset_storage, adapter: :local, dir: "tmp/test-uploads"
 

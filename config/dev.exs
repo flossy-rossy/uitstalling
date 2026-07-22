@@ -10,6 +10,11 @@ config :uitstalling, Uitstalling.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+# Writing-vault master key ring, dev only — protects nothing real (local DB),
+# it just lets the encrypted writing feature run without env setup. Real
+# rings come from WRITING_MASTER_KEYS (config/runtime.exs).
+config :uitstalling, :writing_master_keys, "dev:s9+JKJWMM6j9tYCJ87lN0YoyYg8atGxxJSNg0SXK6wk="
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

@@ -83,6 +83,12 @@ defmodule UitstallingWeb.HomeLive do
               >
                 → your public page: /{@public_slug}
               </.link>
+              <.link
+                navigate={~p"/write"}
+                class="ml-3 text-zinc-600 hover:text-amber-400 normal-case tracking-normal"
+              >
+                → your writing (private)
+              </.link>
             </p>
             <.link
               href={~p"/auth/logout"}

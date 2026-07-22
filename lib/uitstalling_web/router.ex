@@ -61,6 +61,17 @@ defmodule UitstallingWeb.Router do
       live "/deck/:id", DeckLive, :show
       live "/deck/:id/remote", DeckRemoteLive, :show
     end
+
+    # Writing is private end to end — owner-only LiveViews, no public slugs,
+    # nothing here may ever move into the catch-all scope below.
+    get "/write/:project_id/image/:id", WritingImageController, :show
+
+    live_session :writing, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
+      live "/write", WritingLive, :index
+      live "/write/:project_id", WritingProjectLive, :show
+      live "/write/:project_id/map", WritingMapLive, :show
+      live "/write/:project_id/:doc_id", WritingDocLive, :show
+    end
   end
 
   # Other scopes may use custom stacks.

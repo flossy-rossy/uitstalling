@@ -7,7 +7,7 @@ defmodule Uitstalling.Slug do
 
   # Top-level path segments the router owns — a user slug must never shadow
   # them. Keep in sync with the router.
-  @reserved ~w(new auth deck dev a pdf assets fonts images favicon.ico robots.txt)
+  @reserved ~w(new auth deck dev a pdf write assets fonts images favicon.ico robots.txt)
 
   @max_length 60
 

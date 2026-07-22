@@ -23,6 +23,13 @@ defmodule Uitstalling.Fixtures do
     |> Uitstalling.Repo.insert!()
   end
 
+  @doc "A writing project (+ owner unless given one). Returns `%{user, project}`."
+  def writing_project_fixture(attrs \\ %{}) do
+    user = attrs[:user] || user_fixture()
+    {:ok, id} = Uitstalling.Writing.create_project(user.id, attrs[:title] || "Untitled Novel")
+    %{user: user, project: Uitstalling.Writing.get_project!(id, user.id)}
+  end
+
   @doc "Seed the shipped demo deck under id \"demo\", owned by a fresh author."
   def demo_deck_fixture do
     user = user_fixture()

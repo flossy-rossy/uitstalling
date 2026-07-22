@@ -20,6 +20,17 @@ if config_env() != :test do
     image_base_url: System.get_env("IMAGE_BASE_URL") || "https://openrouter.ai/api/v1"
 end
 
+# Writing-vault master keys: a ring of "id:base64key" entries, first wraps
+# new material, every entry can unwrap (rotation = prepend a new key, run
+# Uitstalling.Writing.rotate_project_keys!/0, drop the old entry). Never read
+# in test (hermeticity); dev has a checked-in local key. BACK THIS VALUE UP:
+# losing every key in the ring loses all stored writing.
+if config_env() != :test do
+  if keys = System.get_env("WRITING_MASTER_KEYS") do
+    config :uitstalling, :writing_master_keys, keys
+  end
+end
+
 # Asset storage: Tigris (Fly's S3) when a bucket is configured —
 # `fly storage create` injects BUCKET_NAME + AWS_* into the app env.
 # Without one (dev/test, or a fresh deploy before storage exists), assets
