@@ -58,7 +58,7 @@ defmodule UitstallingWeb.WritingLive do
             <h1 class="mt-4 text-5xl font-bold leading-tight">Your shelf.</h1>
           </div>
           <.link navigate={~p"/"} class={["font-mono text-xs", @palette.muted, "hover:underline"]}>
-            ← presentations
+            ← home
           </.link>
         </header>
 

@@ -12,11 +12,24 @@ defmodule UitstallingWeb.HomeLiveTest do
     %{conn: conn, user: user}
   end
 
+  test "the front door offers the two modes", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "What are we making today?" or html =~ "what are we making today?"
+    assert html =~ ~s(href="/write")
+    assert html =~ ~s(href="/decks")
+  end
+
   test "an unauthenticated visitor sees the sign-in CTA, not authoring", %{conn: _conn} do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Sign in"
+    assert html =~ "sign in"
     assert html =~ "closed beta"
     refute html =~ "New presentation"
+
+    {:ok, _view, decks_html} = live(build_conn(), "/decks")
+    assert decks_html =~ "Sign in"
+    assert decks_html =~ "closed beta"
+    refute decks_html =~ "New presentation"
   end
 
   test "/new redirects unauthenticated visitors to login", %{conn: _conn} do
@@ -27,7 +40,7 @@ defmodule UitstallingWeb.HomeLiveTest do
     invited = Uitstalling.Accounts.invite_user("fresh@example.com", "Sam Marais")
     conn = Plug.Test.init_test_session(build_conn(), %{"user_id" => invited.id})
 
-    {:ok, _view, html} = live(conn, "/")
+    {:ok, _view, html} = live(conn, "/decks")
     assert html =~ "Welcome"
     assert html =~ "Sam"
     assert html =~ "get you presenting"
@@ -71,8 +84,8 @@ defmodule UitstallingWeb.HomeLiveTest do
     assert request["research_filename"] == "sources.docx"
   end
 
-  test "home lists decks with links to present", %{conn: conn} do
-    {:ok, _view, html} = live(conn, "/")
+  test "/decks lists decks with links to present", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/decks")
 
     assert html =~ "New presentation"
     assert html =~ "Passwordless / WebAuthn"

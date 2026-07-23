@@ -57,6 +57,7 @@ defmodule UitstallingWeb.Router do
 
     live_session :deck, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/", HomeLive, :index
+      live "/decks", DecksLive, :index
       live "/new", NewDeckLive, :new
       live "/deck/:id", DeckLive, :show
       live "/deck/:id/remote", DeckRemoteLive, :show
