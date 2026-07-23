@@ -51,39 +51,49 @@ defmodule UitstallingWeb.WritingReadLive do
            kind: nil,
            element_type: nil,
            sections: [],
+           links: %{},
            registry: Writing.element_type_registry(user)
          )
          |> start_async(:load, fn -> load(project, doc_id) end)}
     end
   end
 
-  # One doc → one section; whole project → its chapters in order.
-  defp load(project, nil) do
-    sections =
-      project
-      |> Writing.list_docs()
-      |> Enum.filter(&(&1.kind == "chapter"))
-      |> Enum.map(fn doc ->
-        {raw, _seq, title} = ProjectServer.checkout_doc(project.id, doc.id)
-        %{id: doc.id, title: title, kind: "chapter", element_type: nil, blocks: raw["blocks"]}
-      end)
-
-    %{title: ProjectServer.title(project.id), sections: sections}
-  end
-
+  # One doc → one section; whole project → its chapters in order. `links`
+  # resolves `[[wiki-links]]` (any doc's title → its read view) and is the
+  # same for both modes.
   defp load(project, doc_id) do
-    {raw, _seq, title} = ProjectServer.checkout_doc(project.id, doc_id)
-    doc = Writing.get_doc!(project, doc_id)
+    docs = Writing.list_docs(project)
 
-    section = %{
-      id: doc_id,
-      title: title,
-      kind: doc.kind,
-      element_type: doc.element_type,
-      blocks: raw["blocks"]
-    }
+    links =
+      for d <- docs,
+          into: %{},
+          do: {String.downcase(d.title), "/write/#{project.id}/#{d.id}/read"}
 
-    %{title: title, sections: [section]}
+    sections =
+      cond do
+        doc_id ->
+          {raw, _seq, title} = ProjectServer.checkout_doc(project.id, doc_id)
+          doc = Enum.find(docs, &(&1.id == doc_id))
+
+          [
+            %{
+              id: doc_id,
+              title: title,
+              kind: doc.kind,
+              element_type: doc.element_type,
+              blocks: raw["blocks"]
+            }
+          ]
+
+        true ->
+          for d <- docs, d.kind == "chapter" do
+            {raw, _seq, title} = ProjectServer.checkout_doc(project.id, d.id)
+            %{id: d.id, title: title, kind: "chapter", element_type: nil, blocks: raw["blocks"]}
+          end
+      end
+
+    title = if doc_id, do: hd(sections).title, else: ProjectServer.title(project.id)
+    %{title: title, sections: sections, links: links}
   end
 
   def handle_async(:load, {:ok, data}, socket) do
@@ -92,7 +102,8 @@ defmodule UitstallingWeb.WritingReadLive do
        loaded: true,
        page_title: data.title,
        title: data.title,
-       sections: data.sections
+       sections: data.sections,
+       links: data.links
      )}
   end
 
@@ -171,6 +182,7 @@ defmodule UitstallingWeb.WritingReadLive do
             block={block}
             project_id={@project.id}
             palette={@palette}
+            links={@links}
           />
         </section>
       </article>
@@ -181,6 +193,7 @@ defmodule UitstallingWeb.WritingReadLive do
   attr :block, :map, required: true
   attr :project_id, :string, required: true
   attr :palette, :map, required: true
+  attr :links, :map, required: true
 
   defp read_block(%{block: %{"type" => "heading"}} = assigns) do
     ~H"""
@@ -197,7 +210,7 @@ defmodule UitstallingWeb.WritingReadLive do
   defp read_block(%{block: %{"type" => "epigraph"}} = assigns) do
     ~H"""
     <blockquote class="my-8 px-8 text-center italic">
-      <WritingComponents.prose text={@block["text"]} />
+      <WritingComponents.prose text={@block["text"]} links={@links} />
       <p
         :if={@block["source"] != nil and @block["source"] != ""}
         class={["mt-1 text-sm", @palette.muted]}
@@ -229,7 +242,7 @@ defmodule UitstallingWeb.WritingReadLive do
       <p class={["font-mono text-xs uppercase tracking-widest", @palette.accent]}>
         {@block["label"]}
       </p>
-      <WritingComponents.prose text={@block["text"]} />
+      <WritingComponents.prose text={@block["text"]} links={@links} />
     </div>
     """
   end
@@ -238,7 +251,7 @@ defmodule UitstallingWeb.WritingReadLive do
     ~H"""
     <div class="mt-6">
       <p class="text-xl font-bold">{@block["name"]}</p>
-      <WritingComponents.prose text={@block["text"]} />
+      <WritingComponents.prose text={@block["text"]} links={@links} />
     </div>
     """
   end
@@ -248,7 +261,7 @@ defmodule UitstallingWeb.WritingReadLive do
 
   defp read_block(assigns) do
     ~H"""
-    <WritingComponents.prose text={@block["text"]} />
+    <WritingComponents.prose text={@block["text"]} links={@links} />
     """
   end
 end

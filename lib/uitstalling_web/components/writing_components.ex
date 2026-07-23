@@ -210,25 +210,55 @@ defmodule UitstallingWeb.WritingComponents do
     end
   end
 
-  # MDEx render options: GFM strikethrough, single newlines as line breaks
-  # (writers press Enter once between paragraphs; blank lines still separate),
-  # and — the load-bearing bit — `unsafe: false` so raw HTML in a block is
-  # dropped, not rendered. That makes the output safe to mark {:safe, _}.
-  @markdown_opts [extension: [strikethrough: true], render: [unsafe: false, hardbreaks: true]]
+  # MDEx render options: GFM strikethrough, `[[wiki-links]]`, single newlines
+  # as line breaks (writers press Enter once between paragraphs; blank lines
+  # still separate), and — the load-bearing bit — `unsafe: false` so raw HTML
+  # in a block is dropped, not rendered. Output is then safe to mark {:safe,_}.
+  @markdown_opts [
+    extension: [strikethrough: true, wikilinks_title_after_pipe: true],
+    render: [unsafe: false, hardbreaks: true]
+  ]
 
-  @doc "Render a block's Markdown text to safe HTML (read view)."
-  def markdown_to_html(text) when is_binary(text) do
-    {:safe, MDEx.to_html!(text, @markdown_opts)}
+  # MDEx emits `<a href="<target>" data-wikilink="true">label</a>` for a
+  # `[[target]]`. We rewrite each: a target that matches a doc title (in
+  # `links`, keyed by down-cased title) becomes a real internal link; an
+  # unmatched one becomes a styled non-link so a typo reads as "no page yet"
+  # rather than a broken href.
+  @wikilink_re ~r/<a href="([^"]*)" data-wikilink="true">/
+
+  @doc """
+  Render a block's Markdown to safe HTML. `links` is `%{down-cased title =>
+  path}` used to resolve `[[wiki-links]]`; default `%{}` leaves them dead.
+  """
+  def markdown_to_html(text, links \\ %{})
+
+  def markdown_to_html(text, links) when is_binary(text) do
+    html =
+      text
+      |> MDEx.to_html!(@markdown_opts)
+      |> resolve_wikilinks(links)
+
+    {:safe, html}
   end
 
-  def markdown_to_html(_), do: {:safe, ""}
+  def markdown_to_html(_text, _links), do: {:safe, ""}
+
+  defp resolve_wikilinks(html, links) do
+    Regex.replace(@wikilink_re, html, fn _match, target ->
+      case links[String.downcase(URI.decode(target))] do
+        nil -> ~s(<a class="wikilink-dead" title="No page with this name yet">)
+        path -> ~s(<a href="#{path}" class="wikilink">)
+      end
+    end)
+  end
 
   @doc "A block of Markdown rendered into the reading typography."
   attr :text, :string, required: true
+  attr :links, :map, default: %{}
 
   def prose(assigns) do
     ~H"""
-    <div class="reading">{markdown_to_html(@text)}</div>
+    <div class="reading">{markdown_to_html(@text, @links)}</div>
     """
   end
 

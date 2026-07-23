@@ -782,85 +782,6 @@ defmodule UitstallingWeb.WritingDocLive do
             >
               read
             </.link>
-            <div
-              id="special-chars"
-              phx-hook=".SpecialChars"
-              class="relative"
-              phx-click-away={@special_open && "close_special"}
-            >
-              <button
-                phx-click="toggle_special"
-                class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
-                title="Special characters & formatting"
-              >
-                Ω
-              </button>
-
-              <div
-                :if={@special_open}
-                class={[
-                  "absolute right-0 top-7 z-40 w-72 rounded-lg border shadow-lg p-3 text-left",
-                  @palette.bg,
-                  @palette.rule
-                ]}
-              >
-                <p class={["font-mono text-[10px] uppercase tracking-wider mb-2", @palette.faint]}>
-                  insert — click into your text first
-                </p>
-                <div class="flex flex-wrap gap-1">
-                  <button
-                    :for={
-                      ch <-
-                        ~w(à á â ä ã è é ê ë ì í î ï ò ó ô ö õ ù ú û ü ñ ç æ œ ø å – — “ ” ‘ ’ … ×)
-                    }
-                    type="button"
-                    data-char={ch}
-                    class={["w-7 h-7 rounded text-base", @palette.hover]}
-                  >
-                    {ch}
-                  </button>
-                </div>
-                <p class={["font-mono text-[10px] uppercase tracking-wider mt-3 mb-1", @palette.faint]}>
-                  formatting — select text, then
-                </p>
-                <div class="flex flex-wrap gap-1">
-                  <button
-                    type="button"
-                    data-wrap="**"
-                    class={["px-2 h-7 rounded font-bold", @palette.hover]}
-                  >
-                    B
-                  </button>
-                  <button
-                    type="button"
-                    data-wrap="*"
-                    class={["px-2 h-7 rounded italic", @palette.hover]}
-                  >
-                    I
-                  </button>
-                  <button
-                    type="button"
-                    data-wrap="~~"
-                    class={["px-2 h-7 rounded line-through", @palette.hover]}
-                  >
-                    S
-                  </button>
-                  <button type="button" data-prefix="- " class={["px-2 h-7 rounded", @palette.hover]}>
-                    • list
-                  </button>
-                  <button
-                    type="button"
-                    data-prefix="## "
-                    class={["px-2 h-7 rounded font-bold", @palette.hover]}
-                  >
-                    H
-                  </button>
-                </div>
-                <p class={["text-xs mt-2", @palette.muted]}>
-                  ⌘Z undo · ⌘⇧Z redo · read view renders the formatting
-                </p>
-              </div>
-            </div>
             <button
               phx-click="undo"
               class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
@@ -1128,6 +1049,89 @@ defmodule UitstallingWeb.WritingDocLive do
           </button>
         </div>
 
+        <div
+          id="special-chars"
+          phx-hook=".SpecialChars"
+          class="mt-3 relative"
+          phx-click-away={@special_open && "close_special"}
+        >
+          <button
+            phx-click="toggle_special"
+            class={[
+              "inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border font-mono text-xs",
+              @palette.rule,
+              @palette.muted,
+              @palette.hover
+            ]}
+          >
+            Ω symbols &amp; formatting
+          </button>
+
+          <div
+            :if={@special_open}
+            class={[
+              "absolute bottom-full mb-2 left-0 z-30 w-72 rounded-lg border shadow-lg p-3 text-left",
+              @palette.bg,
+              @palette.rule
+            ]}
+          >
+            <p class={["font-mono text-[10px] uppercase tracking-wider mb-2", @palette.faint]}>
+              insert — click into your text first
+            </p>
+            <div class="flex flex-wrap gap-1">
+              <button
+                :for={
+                  ch <-
+                    ~w(à á â ä ã è é ê ë ì í î ï ò ó ô ö õ ù ú û ü ñ ç æ œ ø å – — “ ” ‘ ’ … ×)
+                }
+                type="button"
+                data-char={ch}
+                class={["w-7 h-7 rounded text-base", @palette.hover]}
+              >
+                {ch}
+              </button>
+            </div>
+            <p class={["font-mono text-[10px] uppercase tracking-wider mt-3 mb-1", @palette.faint]}>
+              formatting — select text, then
+            </p>
+            <div class="flex flex-wrap gap-1">
+              <button
+                type="button"
+                data-wrap="**"
+                class={["px-2 h-7 rounded font-bold", @palette.hover]}
+              >
+                B
+              </button>
+              <button type="button" data-wrap="*" class={["px-2 h-7 rounded italic", @palette.hover]}>
+                I
+              </button>
+              <button
+                type="button"
+                data-wrap="~~"
+                class={["px-2 h-7 rounded line-through", @palette.hover]}
+              >
+                S
+              </button>
+              <button type="button" data-prefix="- " class={["px-2 h-7 rounded", @palette.hover]}>
+                • list
+              </button>
+              <button
+                type="button"
+                data-prefix="## "
+                class={["px-2 h-7 rounded font-bold", @palette.hover]}
+              >
+                H
+              </button>
+              <button type="button" data-linkify class={["px-2 h-7 rounded", @palette.hover]}>
+                [[ link ]]
+              </button>
+            </div>
+            <p class={["text-xs mt-2", @palette.muted]}>
+              <code>[[Name]]</code> links to that page in read view · ⌘Z undo · ⌘⇧Z redo
+            </p>
+          </div>
+        </div>
+
         <nav
           :if={@nav.prev || @nav.next}
           class={["mt-16 pt-6 border-t flex items-center justify-between gap-4", @palette.rule]}
@@ -1361,7 +1365,7 @@ defmodule UitstallingWeb.WritingDocLive do
             this.el.addEventListener("mousedown", (e) => {
               // Keep the textarea's focus/selection while clicking a control.
               const d = e.target.dataset || {}
-              if (d.char || d.wrap || d.prefix) e.preventDefault()
+              if (d.char || d.wrap || d.prefix || d.linkify !== undefined) e.preventDefault()
             })
 
             const changed = (t) => {
@@ -1388,6 +1392,12 @@ defmodule UitstallingWeb.WritingDocLive do
                 // Prefix every selected line (bullets/numbering).
                 const lines = t.value.slice(s, end).split("\n").map((l) => d.prefix + l).join("\n")
                 t.setRangeText(lines || d.prefix, s, end, "end")
+                changed(t)
+              } else if (d.linkify !== undefined) {
+                // Wrap the selection as a [[wiki-link]]; caret inside if empty.
+                const sel = t.value.slice(s, end)
+                t.setRangeText("[[" + sel + "]]", s, end, sel ? "end" : "start")
+                if (!sel) t.selectionStart = t.selectionEnd = s + 2
                 changed(t)
               }
             })

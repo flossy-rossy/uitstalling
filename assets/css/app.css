@@ -208,3 +208,8 @@
 .reading code { font-family: ui-monospace, monospace; font-size: 0.9em; background: currentColor/10%; padding: 0.1em 0.3em; border-radius: 0.25em; }
 .reading a { text-decoration: underline; text-underline-offset: 2px; }
 .reading hr { border: 0; border-top: 1px solid currentColor; opacity: 0.2; margin: 2em 0; }
+
+/* Wiki-links in the read view: resolved links look like links; an unresolved
+   [[Name]] shows as a dashed "no page yet" hint rather than a broken href. */
+.reading a.wikilink { text-decoration: underline; text-underline-offset: 2px; }
+.reading a.wikilink-dead { text-decoration: underline dotted; opacity: 0.6; cursor: help; }

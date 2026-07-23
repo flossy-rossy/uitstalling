@@ -64,6 +64,24 @@ defmodule UitstallingWeb.WritingReadLiveTest do
     refute html =~ "javascript:alert"
   end
 
+  test "[[wiki-links]] resolve to matching docs; unknown ones render as dead", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, mira} = Writing.create_element(project, "character", "Mira")
+    {:ok, doc_id} = Writing.create_doc(project, "chapter", "One")
+    write(project, doc_id, "[[Mira]] appears, but [[Nobody]] does not.")
+
+    {:ok, view, _} = live(conn, "/write/#{project.id}/#{doc_id}/read")
+    html = render_async(view)
+
+    # Known title → a real link to that doc's read view.
+    assert html =~ ~s(href="/write/#{project.id}/#{mira}/read" class="wikilink">Mira</a>)
+    # Unknown title → styled non-link, no href.
+    assert html =~ ~s(<a class="wikilink-dead")
+    assert html =~ "Nobody</a>"
+  end
+
   test "the manuscript view stitches every chapter in book order", %{conn: conn, project: project} do
     {:ok, one} = Writing.create_doc(project, "chapter", "Chapter One")
     {:ok, two} = Writing.create_doc(project, "chapter", "Chapter Two")
