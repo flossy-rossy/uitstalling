@@ -78,6 +78,9 @@ defmodule Uitstalling.Writing.ProjectServer do
   def undo(project_id, doc_id, expected_seq, actor),
     do: call(project_id, {:undo, doc_id, expected_seq, actor})
 
+  def redo(project_id, doc_id, expected_seq, actor),
+    do: call(project_id, {:redo, doc_id, expected_seq, actor})
+
   def rename_doc(project_id, doc_id, doc_title, expected_seq, actor),
     do: call(project_id, {:rename_doc, doc_id, doc_title, expected_seq, actor})
 
@@ -150,6 +153,16 @@ defmodule Uitstalling.Writing.ProjectServer do
 
   def handle_call({:undo, doc_id, expected_seq, actor}, _from, state) do
     case Writing.undo(state.project, doc_id, expected_seq, actor) do
+      {:ok, new_raw, new_seq} = ok ->
+        {:reply, ok, refresh_doc(state, doc_id, new_raw, new_seq)}
+
+      other ->
+        {:reply, other, state}
+    end
+  end
+
+  def handle_call({:redo, doc_id, expected_seq, actor}, _from, state) do
+    case Writing.redo(state.project, doc_id, expected_seq, actor) do
       {:ok, new_raw, new_seq} = ok ->
         {:reply, ok, refresh_doc(state, doc_id, new_raw, new_seq)}
 

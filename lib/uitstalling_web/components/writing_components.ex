@@ -168,6 +168,11 @@ defmodule UitstallingWeb.WritingComponents do
       dark: "text-lime-400 ring-lime-400/40",
       hex: "#65a30d"
     },
+    "pink" => %{
+      light: "text-pink-700 ring-pink-600/40",
+      dark: "text-pink-400 ring-pink-400/40",
+      hex: "#ec4899"
+    },
     "stone" => %{
       light: "text-stone-600 ring-stone-500/40",
       dark: "text-stone-400 ring-stone-400/40",
@@ -203,6 +208,28 @@ defmodule UitstallingWeb.WritingComponents do
       %{color: color} -> color
       _ -> @fallback_slot
     end
+  end
+
+  # MDEx render options: GFM strikethrough, single newlines as line breaks
+  # (writers press Enter once between paragraphs; blank lines still separate),
+  # and — the load-bearing bit — `unsafe: false` so raw HTML in a block is
+  # dropped, not rendered. That makes the output safe to mark {:safe, _}.
+  @markdown_opts [extension: [strikethrough: true], render: [unsafe: false, hardbreaks: true]]
+
+  @doc "Render a block's Markdown text to safe HTML (read view)."
+  def markdown_to_html(text) when is_binary(text) do
+    {:safe, MDEx.to_html!(text, @markdown_opts)}
+  end
+
+  def markdown_to_html(_), do: {:safe, ""}
+
+  @doc "A block of Markdown rendered into the reading typography."
+  attr :text, :string, required: true
+
+  def prose(assigns) do
+    ~H"""
+    <div class="reading">{markdown_to_html(@text)}</div>
+    """
   end
 
   @doc "Ink/edge colors the SVG story map draws chrome with, per page theme."

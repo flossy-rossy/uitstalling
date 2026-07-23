@@ -30,9 +30,9 @@ defmodule Uitstalling.Accounts.UserSettingsTest do
     user = user_fixture()
 
     {:ok, user} =
-      Accounts.update_settings(user, %{"custom_element_types" => [custom("Magic System", "teal")]})
+      Accounts.update_settings(user, %{"custom_element_types" => [custom("Prophecy", "teal")]})
 
-    assert [%{key: "magic_system", label: "Magic System", color: "teal"}] =
+    assert [%{key: "prophecy", label: "Prophecy", color: "teal"}] =
              Accounts.settings(user).custom_element_types
   end
 

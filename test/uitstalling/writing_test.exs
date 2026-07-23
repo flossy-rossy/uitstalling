@@ -295,6 +295,65 @@ defmodule Uitstalling.WritingTest do
     assert {:error, :stale} = Writing.undo(project, doc_id, new_seq - 1, "u1")
   end
 
+  # ----- redo --------------------------------------------------------------------------
+
+  test "redo re-applies the last undone edit; chains with undo" do
+    %{project: project} = writing_project_fixture()
+    {:ok, doc_id} = Writing.create_doc(project, "chapter", "One")
+    {raw, seq, _} = Writing.checkout_doc(project, doc_id)
+    [%{"id" => block}] = raw["blocks"]
+
+    {:ok, _, seq} =
+      Writing.apply_ops(project, doc_id, ops!([set_text(block, "First.")]), seq, "u1")
+
+    {:ok, _, seq} =
+      Writing.apply_ops(project, doc_id, ops!([set_text(block, "Second.")]), seq, "u1")
+
+    # Nothing undone yet → nothing to redo.
+    assert {:error, :nothing_to_redo} = Writing.redo(project, doc_id, seq, "u1")
+
+    {:ok, raw, seq} = Writing.undo(project, doc_id, seq, "u1")
+    assert Enum.at(raw["blocks"], 0)["text"] == "First."
+
+    # Redo brings "Second." back.
+    assert {:ok, raw, seq} = Writing.redo(project, doc_id, seq, "u1")
+    assert Enum.at(raw["blocks"], 0)["text"] == "Second."
+
+    # Undo twice, redo twice → walks the whole stack in both directions.
+    {:ok, _, seq} = Writing.undo(project, doc_id, seq, "u1")
+    {:ok, raw, seq} = Writing.undo(project, doc_id, seq, "u1")
+    assert Enum.at(raw["blocks"], 0)["text"] == ""
+
+    {:ok, _, seq} = Writing.redo(project, doc_id, seq, "u1")
+    {:ok, raw, seq} = Writing.redo(project, doc_id, seq, "u1")
+    assert Enum.at(raw["blocks"], 0)["text"] == "Second."
+
+    assert {:error, :nothing_to_redo} = Writing.redo(project, doc_id, seq, "u1")
+  end
+
+  test "a fresh edit after undo branches history — redo is no longer offered" do
+    %{project: project} = writing_project_fixture()
+    {:ok, doc_id} = Writing.create_doc(project, "chapter", "One")
+    {raw, seq, _} = Writing.checkout_doc(project, doc_id)
+    [%{"id" => block}] = raw["blocks"]
+
+    {:ok, _, seq} =
+      Writing.apply_ops(project, doc_id, ops!([set_text(block, "First.")]), seq, "u1")
+
+    {:ok, _, seq} = Writing.undo(project, doc_id, seq, "u1")
+
+    # Type something new instead of redoing…
+    {:ok, _, seq} =
+      Writing.apply_ops(project, doc_id, ops!([set_text(block, "Detour.")]), seq, "u1")
+
+    # …and the old redo is gone (the branch was abandoned).
+    assert {:error, :nothing_to_redo} = Writing.redo(project, doc_id, seq, "u1")
+
+    # But undo still works on the new edit.
+    {:ok, raw, _seq} = Writing.undo(project, doc_id, seq, "u1")
+    assert Enum.at(raw["blocks"], 0)["text"] == ""
+  end
+
   # ----- timeline ----------------------------------------------------------------------
 
   test "doc_at reconstructs any historical state" do

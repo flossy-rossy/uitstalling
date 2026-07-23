@@ -6,6 +6,17 @@ defmodule Uitstalling.Writing.ElementTypesTest do
   alias Uitstalling.Accounts
   alias Uitstalling.Writing
 
+  test "religion, magic system and misc are in the curated catalog" do
+    catalog = Writing.element_type_catalog()
+
+    for key <- ~w(religion magic_system misc) do
+      assert key in Writing.curated_element_types()
+      assert %{label: _, color: _} = catalog[key]
+    end
+
+    assert catalog["magic_system"].label == "magic system"
+  end
+
   describe "active_element_types/1" do
     test "a fresh user gets core only" do
       user = user_fixture()

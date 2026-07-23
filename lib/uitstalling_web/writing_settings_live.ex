@@ -29,7 +29,14 @@ defmodule UitstallingWeb.WritingSettingsLive do
       true ->
         {:ok,
          socket
-         |> assign(page_title: "Writing settings", new_label: "", new_color: "amber", error: nil)
+         |> assign(
+           page_title: "Writing settings",
+           new_label: "",
+           new_color: "amber",
+           error: nil,
+           contact_error: nil,
+           contacts: Accounts.list_contacts(user)
+         )
          |> load_settings()}
     end
   end
@@ -41,6 +48,31 @@ defmodule UitstallingWeb.WritingSettingsLive do
       enabled: settings.enabled_element_types,
       customs: settings.custom_element_types
     )
+  end
+
+  def handle_event("add_contact", %{"email" => email}, socket) do
+    case Accounts.add_contact(socket.assigns.current_user, email) do
+      {:ok, _contact} ->
+        {:noreply,
+         assign(socket,
+           contact_error: nil,
+           contacts: Accounts.list_contacts(socket.assigns.current_user)
+         )}
+
+      {:error, :self} ->
+        {:noreply, assign(socket, contact_error: "That's you.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         assign(socket,
+           contact_error: "No account uses that email yet — they need to sign up first."
+         )}
+    end
+  end
+
+  def handle_event("remove_contact", %{"id" => id}, socket) do
+    :ok = Accounts.remove_contact(socket.assigns.current_user, id)
+    {:noreply, assign(socket, contacts: Accounts.list_contacts(socket.assigns.current_user))}
   end
 
   def handle_event("toggle_curated", %{"type" => type}, socket) do
@@ -235,6 +267,62 @@ defmodule UitstallingWeb.WritingSettingsLive do
           <p :if={@at_cap} class={["mt-4 text-sm", @palette.muted]}>
             You've used all {Writing.max_custom_types()} custom tags — remove one to add another.
           </p>
+        </section>
+
+        <section class={["mt-14 pt-8 border-t", @palette.rule]}>
+          <p class={["font-mono text-xs tracking-wider", @palette.muted]}>CONTACTS</p>
+          <p class={["mt-2 text-sm", @palette.muted]}>
+            People you write with. Adding someone here is the first step toward
+            sharing work with them.
+          </p>
+
+          <div :if={@contacts != []} class="mt-4 grid gap-2">
+            <div
+              :for={contact <- @contacts}
+              class={[
+                "group flex items-center justify-between gap-4 rounded-lg border px-4 py-2.5",
+                @palette.rule
+              ]}
+            >
+              <span>
+                <span class="font-semibold">{contact.name || contact.email}</span>
+                <span :if={contact.name} class={["ml-2 text-sm", @palette.muted]}>{contact.email}</span>
+              </span>
+              <button
+                phx-click="remove_contact"
+                phx-value-id={contact.id}
+                class={[
+                  "opacity-0 group-hover:opacity-100 font-mono text-xs",
+                  @palette.faint,
+                  "hover:text-red-600"
+                ]}
+              >
+                remove
+              </button>
+            </div>
+          </div>
+
+          <form phx-submit="add_contact" class="mt-4 flex gap-3">
+            <input
+              type="email"
+              name="email"
+              required
+              placeholder="Their email address…"
+              autocomplete="off"
+              class={[
+                "flex-1 rounded-lg px-4 py-2 bg-transparent border",
+                @palette.rule,
+                "placeholder:opacity-50 focus:outline-none"
+              ]}
+            />
+            <button
+              type="submit"
+              class="px-5 py-2 rounded-lg bg-stone-900 text-stone-50 font-semibold hover:bg-stone-700 transition"
+            >
+              + Add contact
+            </button>
+          </form>
+          <p :if={@contact_error} class="mt-2 text-sm text-red-700">{@contact_error}</p>
         </section>
       </div>
     </main>

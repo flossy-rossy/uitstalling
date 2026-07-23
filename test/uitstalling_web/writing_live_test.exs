@@ -92,10 +92,37 @@ defmodule UitstallingWeb.WritingLiveTest do
       assert "faction" in Uitstalling.Accounts.settings(reload(user)).enabled_element_types
 
       # Add a custom type (amber is the default picked colour).
-      view |> form("form[phx-submit=add_custom]", %{label: "Magic System"}) |> render_submit()
+      view |> form("form[phx-submit=add_custom]", %{label: "Prophecy"}) |> render_submit()
 
-      assert [%{key: "magic_system", label: "Magic System"}] =
+      assert [%{key: "prophecy", label: "Prophecy"}] =
                Uitstalling.Accounts.settings(reload(user)).custom_element_types
+    end
+
+    test "the settings page adds and removes contacts by email", %{conn: conn, user: user} do
+      _friend = user_fixture(email: "friend@example.com", name: "Friend")
+      {:ok, view, _html} = live(conn, "/write/settings")
+
+      # Unknown email → error, no contact.
+      html =
+        view
+        |> form("form[phx-submit=add_contact]", %{email: "ghost@example.com"})
+        |> render_submit()
+
+      assert html =~ "need to sign up"
+      assert Uitstalling.Accounts.list_contacts(user) == []
+
+      # Real user → added and shown.
+      html =
+        view
+        |> form("form[phx-submit=add_contact]", %{email: "friend@example.com"})
+        |> render_submit()
+
+      assert html =~ "Friend"
+      assert [%{email: "friend@example.com"}] = Uitstalling.Accounts.list_contacts(user)
+
+      # Remove.
+      view |> element("button[phx-click=remove_contact]") |> render_click()
+      assert Uitstalling.Accounts.list_contacts(user) == []
     end
 
     test "an enabled curated type and a custom type reach a project's create dropdown", %{
@@ -106,7 +133,7 @@ defmodule UitstallingWeb.WritingLiveTest do
       {:ok, _} =
         Uitstalling.Accounts.update_settings(user, %{
           "enabled_element_types" => ["faction"],
-          "custom_element_types" => [%{"label" => "Magic System", "color" => "teal"}]
+          "custom_element_types" => [%{"label" => "Prophecy", "color" => "teal"}]
         })
 
       {:ok, view, _html} = live(conn, "/write/#{project.id}")
@@ -114,12 +141,12 @@ defmodule UitstallingWeb.WritingLiveTest do
       view |> element("button[phx-click=toggle_type_menu]") |> render_click()
 
       assert has_element?(view, "button[phx-value-type=faction]")
-      assert has_element?(view, "button[phx-value-type=magic_system]")
+      assert has_element?(view, "button[phx-value-type=prophecy]")
 
       # And a custom-typed element can be created + shows up (by title) on the
       # page. Through the ProjectServer, like the UI does, so its cache is fresh.
       {:ok, _} =
-        Uitstalling.Writing.ProjectServer.create_element(project.id, "magic_system", "The Weave")
+        Uitstalling.Writing.ProjectServer.create_element(project.id, "prophecy", "The Weave")
 
       {:ok, view, _} = live(conn, "/write/#{project.id}")
       assert render_async(view) =~ "The Weave"
@@ -132,6 +159,43 @@ defmodule UitstallingWeb.WritingLiveTest do
     setup %{project: project} do
       {:ok, doc_id} = Writing.create_doc(project, "chapter", "Chapter One")
       %{doc_id: doc_id}
+    end
+
+    test "a new block lands right after the block the caret was in", %{
+      conn: conn,
+      project: project,
+      doc_id: doc_id
+    } do
+      {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
+
+      {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
+      [%{"id" => first}] = raw["blocks"]
+
+      # Append a heading at the end, then put the caret back in the first
+      # block and add a scene break — it should slot between them, not append.
+      render_hook(view, "add_block", %{"type" => "heading"})
+      render_hook(view, "block_focused", %{"id" => first})
+      render_hook(view, "add_block", %{"type" => "scene_break"})
+
+      {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
+      assert Enum.map(raw["blocks"], & &1["type"]) == ~w(paragraph scene_break heading)
+    end
+
+    test "chapters link to the next/previous chapter in book order", %{
+      conn: conn,
+      project: project,
+      doc_id: one
+    } do
+      {:ok, two} = Writing.create_doc(project, "chapter", "Chapter Two")
+
+      {:ok, view, _} = live(conn, "/write/#{project.id}/#{one}")
+      render_async(view)
+      assert has_element?(view, "a[href='/write/#{project.id}/#{two}']")
+
+      {:ok, view, _} = live(conn, "/write/#{project.id}/#{two}")
+      render_async(view)
+      assert has_element?(view, "a[href='/write/#{project.id}/#{one}']")
     end
 
     test "mounts with the doc and saves typed text as ops", %{
@@ -207,6 +271,11 @@ defmodule UitstallingWeb.WritingLiveTest do
 
       {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
       assert [%{"text" => ""}] = raw["blocks"]
+
+      # …and the redo button brings it back.
+      view2 |> element("button[phx-click=redo]") |> render_click()
+      {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
+      assert [%{"text" => "Draft one."}] = raw["blocks"]
     end
 
     test "chapters tag plan elements, both pages see the link, untag removes it", %{

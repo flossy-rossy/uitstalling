@@ -75,6 +75,9 @@ defmodule UitstallingWeb.WritingDocLive do
            linked: [],
            map_docs: %{},
            map_edges: [],
+           nav: %{prev: nil, next: nil},
+           active_block: nil,
+           special_open: false,
            active_types: Writing.active_element_types(user),
            registry: Writing.element_type_registry(user),
            tag_picker: false,
@@ -101,7 +104,8 @@ defmodule UitstallingWeb.WritingDocLive do
              title: title,
              project_title: ProjectServer.title(project_id),
              linked: Writing.linked_docs(project, doc_id),
-             map: map_data(project, doc_id, doc.kind)
+             map: map_data(project, doc_id, doc.kind),
+             nav: chapter_nav(project_id, doc_id, doc.kind)
            }
          end)}
     end
@@ -119,7 +123,8 @@ defmodule UitstallingWeb.WritingDocLive do
        words: Writing.count_words(data.raw),
        linked: data.linked,
        map_docs: data.map.docs,
-       map_edges: data.map.edges
+       map_edges: data.map.edges,
+       nav: data.nav
      )}
   end
 
@@ -146,15 +151,22 @@ defmodule UitstallingWeb.WritingDocLive do
     end
   end
 
+  # The block hook reports which block the caret is in, so a new block lands
+  # right after the one you're working on — not way down at the end.
+  def handle_event("block_focused", %{"id" => id}, socket) do
+    {:noreply, assign(socket, active_block: id)}
+  end
+
   # ----- Structure (block menu / add bar) ------------------------------------------
 
   def handle_event("add_block", %{"type" => type}, socket) do
     if type in palette(socket.assigns.kind, socket.assigns.element_type) do
-      # Caret to the block just appended.
+      after_pos = insert_after(socket)
+
       {:noreply,
-       commit(socket, [%InsertBlock{block: default_block(type)}],
+       commit(socket, [%InsertBlock{block: default_block(type), after: after_pos}],
          bump: true,
-         focus: &{List.last(&1["blocks"])["id"], 0}
+         focus: &{inserted_id(&1, after_pos), 0}
        )}
     else
       {:noreply, socket}
@@ -197,6 +209,14 @@ defmodule UitstallingWeb.WritingDocLive do
 
   def handle_event("dismiss_error", _params, socket) do
     {:noreply, assign(socket, edit_error: nil)}
+  end
+
+  def handle_event("toggle_special", _params, socket) do
+    {:noreply, assign(socket, special_open: not socket.assigns.special_open)}
+  end
+
+  def handle_event("close_special", _params, socket) do
+    {:noreply, assign(socket, special_open: false)}
   end
 
   # ----- Tags (plan links) ---------------------------------------------------------
@@ -358,26 +378,10 @@ defmodule UitstallingWeb.WritingDocLive do
     end
   end
 
-  # ----- Undo (the event log, not a socket stack) --------------------------------------
+  # ----- Undo / redo (the event log, not a socket stack) -------------------------------
 
-  def handle_event("undo", _params, socket) do
-    %{project: project, doc_id: doc_id, seq: seq} = socket.assigns
-
-    case ProjectServer.undo(project.id, doc_id, seq, socket.assigns.current_user.id) do
-      {:ok, raw, seq} ->
-        broadcast_update(socket)
-        {:noreply, refresh(socket, raw, seq)}
-
-      {:error, :nothing_to_undo} ->
-        {:noreply, socket}
-
-      {:error, :stale} ->
-        {:noreply, reload_stale(socket)}
-
-      {:error, [error | _]} ->
-        {:noreply, assign(socket, edit_error: "Can't undo that: #{error}")}
-    end
-  end
+  def handle_event("undo", _params, socket), do: {:noreply, step(socket, :undo)}
+  def handle_event("redo", _params, socket), do: {:noreply, step(socket, :redo)}
 
   # ----- Title ---------------------------------------------------------------------------
 
@@ -482,6 +486,33 @@ defmodule UitstallingWeb.WritingDocLive do
     socket
   end
 
+  # Undo/redo share a path: both append an inverting event and refresh, or
+  # no-op when there's nothing to step to.
+  defp step(socket, dir) do
+    %{project: project, doc_id: doc_id, seq: seq} = socket.assigns
+    actor = socket.assigns.current_user.id
+
+    result =
+      case dir do
+        :undo -> ProjectServer.undo(project.id, doc_id, seq, actor)
+        :redo -> ProjectServer.redo(project.id, doc_id, seq, actor)
+      end
+
+    case result do
+      {:ok, raw, seq} ->
+        socket |> broadcast_update() |> refresh(raw, seq)
+
+      {:error, reason} when reason in [:nothing_to_undo, :nothing_to_redo] ->
+        socket
+
+      {:error, :stale} ->
+        reload_stale(socket)
+
+      {:error, [error | _]} ->
+        assign(socket, edit_error: "Can't #{dir} that: #{error}")
+    end
+  end
+
   defp push_focus(socket, block_id, pos),
     do: push_event(socket, "focus_block", %{id: block_id, pos: pos})
 
@@ -508,6 +539,27 @@ defmodule UitstallingWeb.WritingDocLive do
   end
 
   defp find_block(raw, id), do: Enum.find(raw["blocks"], &(&1["id"] == id))
+
+  # Where a newly added block goes: right after the block the caret was last
+  # in, or at the end if there's no live focus to anchor to.
+  defp insert_after(socket) do
+    if socket.assigns.active_block && find_block(socket.assigns.raw, socket.assigns.active_block),
+      do: socket.assigns.active_block,
+      else: "end"
+  end
+
+  # The id of the block that `add_block` just inserted, for caret placement:
+  # the one sitting after the anchor (or the last block when appended).
+  defp inserted_id(raw, "end"), do: List.last(raw["blocks"])["id"]
+
+  defp inserted_id(raw, anchor_id) do
+    blocks = raw["blocks"]
+
+    case Enum.find_index(blocks, &(&1["id"] == anchor_id)) do
+      nil -> List.last(blocks)["id"]
+      index -> Enum.at(blocks, index + 1)["id"]
+    end
+  end
 
   defp default_block("scene_break"), do: %{"type" => "scene_break"}
   defp default_block("character"), do: %{"type" => "character", "name" => "", "text" => ""}
@@ -553,6 +605,24 @@ defmodule UitstallingWeb.WritingDocLive do
   end
 
   defp map_data(_project, _doc_id, _kind), do: %{docs: %{}, edges: []}
+
+  # Prev/next chapter (by book order) for the editor's chapter-to-chapter nav.
+  # Only chapters get it — plan maps and elements aren't a reading sequence.
+  defp chapter_nav(project_id, doc_id, "chapter") do
+    chapters =
+      project_id
+      |> ProjectServer.list_docs()
+      |> Enum.filter(&(&1.kind == "chapter"))
+      |> Enum.sort_by(& &1.position)
+
+    index = Enum.find_index(chapters, &(&1.id == doc_id))
+    at = fn i -> if index, do: Enum.at(chapters, i) end
+
+    %{prev: index && index > 0 && at.(index - 1), next: index && at.(index + 1)}
+    |> Map.new(fn {k, v} -> {k, if(is_map(v), do: %{id: v.id, title: v.title}, else: nil)} end)
+  end
+
+  defp chapter_nav(_project_id, _doc_id, _kind), do: %{prev: nil, next: nil}
 
   defp placed_doc_ids(raw) do
     for %{"type" => "node", "doc" => doc} <- raw["blocks"], do: doc
@@ -704,12 +774,106 @@ defmodule UitstallingWeb.WritingDocLive do
           </div>
 
           <div class="flex items-center gap-4 shrink-0">
+            <.link
+              :if={@kind != "planning"}
+              navigate={~p"/write/#{@project.id}/#{@doc_id}/read"}
+              class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
+              title="Read view (rendered)"
+            >
+              read
+            </.link>
+            <div
+              id="special-chars"
+              phx-hook=".SpecialChars"
+              class="relative"
+              phx-click-away={@special_open && "close_special"}
+            >
+              <button
+                phx-click="toggle_special"
+                class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
+                title="Special characters & formatting"
+              >
+                Ω
+              </button>
+
+              <div
+                :if={@special_open}
+                class={[
+                  "absolute right-0 top-7 z-40 w-72 rounded-lg border shadow-lg p-3 text-left",
+                  @palette.bg,
+                  @palette.rule
+                ]}
+              >
+                <p class={["font-mono text-[10px] uppercase tracking-wider mb-2", @palette.faint]}>
+                  insert — click into your text first
+                </p>
+                <div class="flex flex-wrap gap-1">
+                  <button
+                    :for={
+                      ch <-
+                        ~w(à á â ä ã è é ê ë ì í î ï ò ó ô ö õ ù ú û ü ñ ç æ œ ø å – — “ ” ‘ ’ … ×)
+                    }
+                    type="button"
+                    data-char={ch}
+                    class={["w-7 h-7 rounded text-base", @palette.hover]}
+                  >
+                    {ch}
+                  </button>
+                </div>
+                <p class={["font-mono text-[10px] uppercase tracking-wider mt-3 mb-1", @palette.faint]}>
+                  formatting — select text, then
+                </p>
+                <div class="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    data-wrap="**"
+                    class={["px-2 h-7 rounded font-bold", @palette.hover]}
+                  >
+                    B
+                  </button>
+                  <button
+                    type="button"
+                    data-wrap="*"
+                    class={["px-2 h-7 rounded italic", @palette.hover]}
+                  >
+                    I
+                  </button>
+                  <button
+                    type="button"
+                    data-wrap="~~"
+                    class={["px-2 h-7 rounded line-through", @palette.hover]}
+                  >
+                    S
+                  </button>
+                  <button type="button" data-prefix="- " class={["px-2 h-7 rounded", @palette.hover]}>
+                    • list
+                  </button>
+                  <button
+                    type="button"
+                    data-prefix="## "
+                    class={["px-2 h-7 rounded font-bold", @palette.hover]}
+                  >
+                    H
+                  </button>
+                </div>
+                <p class={["text-xs mt-2", @palette.muted]}>
+                  ⌘Z undo · ⌘⇧Z redo · read view renders the formatting
+                </p>
+              </div>
+            </div>
             <button
               phx-click="undo"
               class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
-              title="Undo (event-logged — survives refresh)"
+              title="Undo — ⌘Z (event-logged, survives refresh)"
             >
               ↶ undo
+            </button>
+            <button
+              phx-click="redo"
+              class={["font-mono text-xs", @palette.muted, "hover:opacity-70"]}
+              title="Redo — ⌘⇧Z"
+            >
+              ↷ redo
             </button>
             <span class={["font-mono text-xs tabular-nums", @palette.faint]}>{@words} words</span>
           </div>
@@ -963,6 +1127,38 @@ defmodule UitstallingWeb.WritingDocLive do
             + {type_label(type)}
           </button>
         </div>
+
+        <nav
+          :if={@nav.prev || @nav.next}
+          class={["mt-16 pt-6 border-t flex items-center justify-between gap-4", @palette.rule]}
+        >
+          <.link
+            :if={@nav.prev}
+            navigate={~p"/write/#{@project.id}/#{@nav.prev.id}"}
+            class={["group flex flex-col", @palette.hover, "rounded-lg px-3 py-2 -mx-3"]}
+          >
+            <span class={["font-mono text-[10px] uppercase tracking-wider", @palette.faint]}>
+              ← previous
+            </span>
+            <span class="font-semibold">{@nav.prev.title}</span>
+          </.link>
+          <span :if={is_nil(@nav.prev)}></span>
+
+          <.link
+            :if={@nav.next}
+            navigate={~p"/write/#{@project.id}/#{@nav.next.id}"}
+            class={[
+              "group flex flex-col items-end text-right",
+              @palette.hover,
+              "rounded-lg px-3 py-2 -mx-3"
+            ]}
+          >
+            <span class={["font-mono text-[10px] uppercase tracking-wider", @palette.faint]}>
+              next chapter →
+            </span>
+            <span class="font-semibold">{@nav.next.title}</span>
+          </.link>
+        </nav>
       </div>
 
       <div
@@ -987,6 +1183,10 @@ defmodule UitstallingWeb.WritingDocLive do
               this.timer = setTimeout(() => this.flush(), 1200)
             })
             this.el.addEventListener("blur", () => this.flush())
+            // Report the caret's block so a new block is added right after it.
+            this.el.addEventListener("focus", () =>
+              this.pushEvent("block_focused", {id: this.el.dataset.blockId})
+            )
             // Enter is a plain newline (native) — a block holds many
             // paragraphs, so drafting never touches the server per Return.
             // Escape just commits and drops focus.
@@ -1143,6 +1343,58 @@ defmodule UitstallingWeb.WritingDocLive do
         }
       </script>
 
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".SpecialChars">
+        export default {
+          mounted() {
+            // Remember the writing field the caret was last in — clicking the
+            // Ω button and a character both steal focus, so we insert back
+            // into this remembered target at its preserved caret.
+            this.target = null
+            document.addEventListener("focusin", (e) => {
+              const el = e.target
+              if (el && el.dataset && el.dataset.blockId &&
+                  (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
+                this.target = el
+              }
+            })
+
+            this.el.addEventListener("mousedown", (e) => {
+              // Keep the textarea's focus/selection while clicking a control.
+              const d = e.target.dataset || {}
+              if (d.char || d.wrap || d.prefix) e.preventDefault()
+            })
+
+            const changed = (t) => {
+              t.focus()
+              // Nudge the block hook to debounce-save + resize.
+              t.dispatchEvent(new Event("input", {bubbles: true}))
+            }
+
+            this.el.addEventListener("click", (e) => {
+              const d = e.target.dataset || {}
+              const t = this.target
+              if (!t) return
+              const s = t.selectionStart ?? t.value.length
+              const end = t.selectionEnd ?? s
+
+              if (d.char) {
+                t.setRangeText(d.char, s, end, "end")
+                changed(t)
+              } else if (d.wrap) {
+                // Wrap the selection (or the caret) in a marker pair.
+                t.setRangeText(d.wrap + t.value.slice(s, end) + d.wrap, s, end, "end")
+                changed(t)
+              } else if (d.prefix) {
+                // Prefix every selected line (bullets/numbering).
+                const lines = t.value.slice(s, end).split("\n").map((l) => d.prefix + l).join("\n")
+                t.setRangeText(lines || d.prefix, s, end, "end")
+                changed(t)
+              }
+            })
+          },
+        }
+      </script>
+
       <script :type={Phoenix.LiveView.ColocatedHook} name=".WritingDocNav">
         export default {
           mounted() {
@@ -1157,16 +1409,19 @@ defmodule UitstallingWeb.WritingDocLive do
               })
             })
 
-            // Cmd/Ctrl+Z = event-log undo. While the caret is IN a block
-            // (a text field), the browser's native undo of the just-typed
-            // text should win — those keystrokes haven't been committed as
-            // ops yet — so only intercept when focus is on the page chrome.
+            // ⌘/Ctrl+Z = event-log undo, ⌘⇧Z or Ctrl+Y = redo. While the
+            // caret is IN a block (a text field) the browser's native
+            // undo/redo of just-typed text should win — those keystrokes
+            // aren't committed as ops yet — so only intercept on page chrome.
             this.onKey = (e) => {
-              if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return
+              if (!(e.metaKey || e.ctrlKey)) return
+              const redo = (e.key === "z" && e.shiftKey) || e.key === "y"
+              const undo = e.key === "z" && !e.shiftKey
+              if (!undo && !redo) return
               const t = document.activeElement
               if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return
               e.preventDefault()
-              this.pushEvent("undo")
+              this.pushEvent(redo ? "redo" : "undo")
             }
             window.addEventListener("keydown", this.onKey)
           },

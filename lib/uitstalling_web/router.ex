@@ -74,7 +74,10 @@ defmodule UitstallingWeb.Router do
       live "/write/settings", WritingSettingsLive, :show
       live "/write/:project_id", WritingProjectLive, :show
       live "/write/:project_id/map", WritingMapLive, :show
+      # Literal 3rd segments (map/read) before the :doc_id catch-all.
+      live "/write/:project_id/read", WritingReadLive, :project
       live "/write/:project_id/:doc_id", WritingDocLive, :show
+      live "/write/:project_id/:doc_id/read", WritingReadLive, :doc
     end
   end
 

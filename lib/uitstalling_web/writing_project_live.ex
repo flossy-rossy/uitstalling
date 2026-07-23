@@ -220,7 +220,16 @@ defmodule UitstallingWeb.WritingProjectLive do
         </header>
 
         <section class="mt-12">
-          <p class={["font-mono text-xs tracking-wider", @palette.muted]}>CHAPTERS</p>
+          <div class="flex items-center justify-between gap-4">
+            <p class={["font-mono text-xs tracking-wider", @palette.muted]}>CHAPTERS</p>
+            <.link
+              :if={@chapters != []}
+              navigate={~p"/write/#{@project.id}/read"}
+              class={["font-mono text-xs", @palette.accent, "hover:underline"]}
+            >
+              read manuscript →
+            </.link>
+          </div>
 
           <div class="mt-4 grid gap-2">
             <div

@@ -46,7 +46,7 @@ defmodule Uitstalling.Writing do
   # a slot into Tailwind classes — custom types pick a slot too, which is what
   # keeps their colour inside Tailwind's build-time constraint.
   @core_element_types ~w(character location object)
-  @curated_element_types ~w(family faction nation theme arc event creature organization)
+  @curated_element_types ~w(family faction nation religion magic_system theme arc event creature organization misc)
 
   @element_type_catalog %{
     "character" => %{label: "character", color: "amber"},
@@ -55,17 +55,20 @@ defmodule Uitstalling.Writing do
     "family" => %{label: "family", color: "fuchsia"},
     "faction" => %{label: "faction", color: "rose"},
     "nation" => %{label: "nation", color: "red"},
-    "theme" => %{label: "theme", color: "violet"},
+    "religion" => %{label: "religion", color: "lime"},
+    "magic_system" => %{label: "magic system", color: "violet"},
+    "theme" => %{label: "theme", color: "pink"},
     "arc" => %{label: "arc", color: "indigo"},
     "event" => %{label: "event", color: "orange"},
     "creature" => %{label: "creature", color: "teal"},
-    "organization" => %{label: "organization", color: "cyan"}
+    "organization" => %{label: "organization", color: "cyan"},
+    "misc" => %{label: "misc", color: "slate"}
   }
 
   # Colour slots a custom type may choose from (all have Tailwind classes in
   # WritingComponents). The doc-kind fallbacks (chapter/planning) use their
   # own neutral slots and are not offered here.
-  @color_slots ~w(amber emerald sky fuchsia rose red violet indigo orange teal cyan lime)
+  @color_slots ~w(amber emerald sky fuchsia rose red violet indigo orange teal cyan lime pink)
 
   # Colours for the non-element doc kinds, so the registry can render a
   # chapter/plan-map chip too.
@@ -752,6 +755,49 @@ defmodule Uitstalling.Writing do
     end
   end
 
+  @doc """
+  Redo the most recently undone edit: re-apply that undo's stored inverse
+  (which reinstates the original change) and append a `redo` event cancelling
+  the undo. Returns like `apply_ops/6`, or `{:error, :nothing_to_redo}`.
+  Available only right after an undo/redo — a fresh edit branches history.
+  """
+  def redo(%Project{} = project, doc_id, expected_seq, actor) do
+    doc = get_doc!(project, doc_id)
+    dek = dek(project)
+
+    case redo_target(doc.id) do
+      nil ->
+        {:error, :nothing_to_redo}
+
+      target ->
+        payload = decrypt_map!(dek, target.payload_enc, event_aad(doc.id, target.seq))
+        # The undo's inverse re-does the change the undo reverted.
+        redo_ops = Enum.map(payload["inverse"], &Op.load/1)
+        raw = migrate(decrypt_map!(dek, doc.data_enc, doc.id))
+
+        with {:ok, new_raw, applied, inverse} <- Op.apply_batch(raw, redo_ops),
+             new_raw = migrate(new_raw),
+             {:ok, _} <- parse(new_raw, doc.kind) do
+          redo_payload = %{
+            "ops" => Enum.map(applied, &Op.dump/1),
+            "inverse" => Enum.map(inverse, &Op.dump/1)
+          }
+
+          commit_event(
+            dek,
+            doc,
+            new_raw,
+            expected_seq,
+            "redo",
+            actor,
+            "redo",
+            target.seq,
+            redo_payload
+          )
+        end
+    end
+  end
+
   @doc "Rename a doc — an event like any other change (CAS'd, in the timeline)."
   def rename_doc(%Project{} = project, doc_id, title, expected_seq, actor) do
     with {:ok, title} <- clean_title(title) do
@@ -857,27 +903,53 @@ defmodule Uitstalling.Writing do
   defp seq_conflict?(%Ecto.ConstraintError{constraint: constraint}),
     do: constraint == "writing_events_doc_id_seq_index"
 
-  # The most recent content event not cancelled by a live undo. Undos cancel
-  # their target; a cancelled undo releases its target (that's redo, when the
-  # timeline UI wants it).
+  # Undo/redo share one rule. History is append-only: an undo cancels the
+  # event it targets (`undoes`), a redo cancels the undo it targets. Walking
+  # newest→oldest, an event is "live" (its effect currently applied) unless a
+  # newer event already cancelled it; a live event in turn cancels its own
+  # target. From that: the undo target is the newest live ops.applied; the
+  # redo target is the newest live undo — but only while the log's tail is
+  # undo/redo activity (a fresh edit branches history and disables redo).
+
   defp undo_target(doc_id) do
-    events =
-      Repo.all(
-        from(e in Event,
-          where: e.doc_id == ^doc_id and e.type in ["ops.applied", "undo"],
-          order_by: [desc: e.seq]
-        )
+    events = history(doc_id)
+    cancelled = cancelled_set(events)
+
+    Enum.find(events, fn e ->
+      e.type == "ops.applied" and not MapSet.member?(cancelled, e.seq)
+    end)
+  end
+
+  defp redo_target(doc_id) do
+    events = history(doc_id)
+    cancelled = cancelled_set(events)
+
+    Enum.reduce_while(events, nil, fn e, _acc ->
+      cond do
+        # A fresh edit at the tail means we're not sitting on an undo → no redo.
+        e.type == "ops.applied" -> {:halt, nil}
+        e.type == "undo" and not MapSet.member?(cancelled, e.seq) -> {:halt, e}
+        true -> {:cont, nil}
+      end
+    end)
+  end
+
+  defp history(doc_id) do
+    Repo.all(
+      from(e in Event,
+        where: e.doc_id == ^doc_id and e.type in ["ops.applied", "undo", "redo"],
+        order_by: [desc: e.seq]
       )
+    )
+  end
 
-    cancelled =
-      Enum.reduce(events, MapSet.new(), fn event, cancelled ->
-        if event.type == "undo" and not MapSet.member?(cancelled, event.seq),
-          do: MapSet.put(cancelled, event.undoes),
-          else: cancelled
-      end)
-
-    Enum.find(events, fn event ->
-      event.type == "ops.applied" and not MapSet.member?(cancelled, event.seq)
+  # Newest→oldest: an event cancels its `undoes` target unless the event was
+  # itself already cancelled by something newer.
+  defp cancelled_set(events) do
+    Enum.reduce(events, MapSet.new(), fn e, cancelled ->
+      if e.undoes && not MapSet.member?(cancelled, e.seq),
+        do: MapSet.put(cancelled, e.undoes),
+        else: cancelled
     end)
   end
 

@@ -186,3 +186,25 @@
   --font-source-serif: "Source Serif 4", Georgia, serif;
   --font-georgia: Georgia, "Times New Roman", serif;
 }
+
+/* ----- Writing: read-view typography ---------------------------------------
+   MDEx output for a prose block. Deliberately hand-rolled (no typography
+   plugin): the Markdown subset is small and this inherits the page ink so it
+   works across every writing theme. */
+.reading > :first-child { margin-top: 0; }
+.reading p { margin: 0 0 1em; line-height: 1.75; }
+.reading strong { font-weight: 700; }
+.reading em { font-style: italic; }
+.reading del { opacity: 0.6; text-decoration: line-through; }
+.reading h1, .reading h2, .reading h3 { font-weight: 700; line-height: 1.25; margin: 1.5em 0 0.5em; }
+.reading h1 { font-size: 1.6em; }
+.reading h2 { font-size: 1.35em; }
+.reading h3 { font-size: 1.15em; }
+.reading ul, .reading ol { margin: 0 0 1em; padding-left: 1.5em; }
+.reading ul { list-style: disc; }
+.reading ol { list-style: decimal; }
+.reading li { margin: 0.25em 0; line-height: 1.7; }
+.reading blockquote { margin: 0 0 1em; padding-left: 1em; border-left: 3px solid currentColor; opacity: 0.75; font-style: italic; }
+.reading code { font-family: ui-monospace, monospace; font-size: 0.9em; background: currentColor/10%; padding: 0.1em 0.3em; border-radius: 0.25em; }
+.reading a { text-decoration: underline; text-underline-offset: 2px; }
+.reading hr { border: 0; border-top: 1px solid currentColor; opacity: 0.2; margin: 2em 0; }

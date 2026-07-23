@@ -141,6 +141,37 @@ defmodule UitstallingWeb.WritingMapLive do
             svg.setAttribute("height", "100%")
             this.el.appendChild(svg)
 
+            // Zoom: viewBox is auto-fit to the graph each tick, then scaled by
+            // this.zoom around the content centre (>1 in, <1 out). Wheel and
+            // the +/−/⤢ buttons drive it.
+            this.zoom = 1
+            const clampZoom = (z) => Math.min(4, Math.max(0.2, z))
+            this.el.style.position = "relative"
+            this.el.addEventListener(
+              "wheel",
+              (e) => {
+                e.preventDefault()
+                this.zoom = clampZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 0.9))
+              },
+              {passive: false}
+            )
+
+            const controls = document.createElement("div")
+            controls.style.cssText =
+              "position:absolute;bottom:12px;right:12px;display:flex;gap:6px"
+            ;[["−", () => (this.zoom = clampZoom(this.zoom * 0.8))],
+              ["⤢", () => (this.zoom = 1)],
+              ["+", () => (this.zoom = clampZoom(this.zoom * 1.25))]].forEach(([txt, fn]) => {
+              const b = document.createElement("button")
+              b.textContent = txt
+              b.style.cssText =
+                `width:28px;height:28px;border-radius:6px;font:14px ui-monospace,monospace;` +
+                `border:1px solid ${edgeColor};color:${ink};background:transparent;cursor:pointer`
+              b.addEventListener("click", fn)
+              controls.appendChild(b)
+            })
+            this.el.appendChild(controls)
+
             const edgeEls = links.map(() => {
               const line = document.createElementNS(NS, "line")
               line.setAttribute("stroke", edgeColor)
@@ -266,7 +297,10 @@ defmodule UitstallingWeb.WritingMapLive do
             const pad = 80
             const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad
             const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad
-            svg.setAttribute("viewBox", `${minX} ${minY} ${maxX - minX} ${maxY - minY}`)
+            // Fit-to-content box, then scale by zoom around its centre.
+            const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
+            const w = (maxX - minX) / this.zoom, h = (maxY - minY) / this.zoom
+            svg.setAttribute("viewBox", `${cx - w / 2} ${cy - h / 2} ${w} ${h}`)
 
             this.raf = requestAnimationFrame(this.tick)
           },

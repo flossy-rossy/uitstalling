@@ -12,12 +12,66 @@ defmodule Uitstalling.Accounts do
 
   import Ecto.Query
 
-  alias Uitstalling.Accounts.{Invite, User, UserSettings, WebauthnCredential}
+  alias Uitstalling.Accounts.{Contact, Invite, User, UserSettings, WebauthnCredential}
   alias Uitstalling.Repo
   alias Uitstalling.Slug
 
   def get_user(nil), do: nil
   def get_user(id), do: Repo.get(User, id)
+
+  # ----- Contacts ----------------------------------------------------------------
+  #
+  # Directed user→user connections (the seam future sharing builds on). Adding
+  # is idempotent; you look someone up by the email they registered with.
+
+  @doc """
+  Add the user with `email` to `user`'s contacts. `{:ok, contact_user}`,
+  `{:error, :not_found}` if no such account, or `{:error, :self}`.
+  """
+  def add_contact(%User{} = user, email) do
+    case get_user_by_email(normalize_email(email)) do
+      nil ->
+        {:error, :not_found}
+
+      %User{id: id} when id == user.id ->
+        {:error, :self}
+
+      %User{} = other ->
+        Repo.insert!(
+          %Contact{
+            user_id: user.id,
+            contact_id: other.id,
+            inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          },
+          on_conflict: :nothing,
+          conflict_target: [:user_id, :contact_id]
+        )
+
+        {:ok, other}
+    end
+  end
+
+  @doc "A user's contacts as `%{id, name, email}`, by name."
+  def list_contacts(%User{} = user) do
+    Repo.all(
+      from(c in Contact,
+        where: c.user_id == ^user.id,
+        join: u in User,
+        on: u.id == c.contact_id,
+        order_by: [asc: u.name, asc: u.email],
+        select: %{id: u.id, name: u.name, email: u.email}
+      )
+    )
+  end
+
+  @doc "Remove a contact from `user`'s list."
+  def remove_contact(%User{} = user, contact_id) do
+    Repo.delete_all(
+      from(c in Contact, where: c.user_id == ^user.id and c.contact_id == ^contact_id)
+    )
+
+    :ok
+  end
 
   @doc "A user's settings, defaulting when never saved."
   def settings(%User{settings: %UserSettings{} = s}), do: s
