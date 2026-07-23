@@ -9,11 +9,11 @@ defmodule UitstallingWeb.WritingProjectLive do
 
   alias Uitstalling.Accounts
   alias Uitstalling.Writing
+  alias Uitstalling.Writing.ProjectServer
   alias UitstallingWeb.WritingComponents
 
-  import UitstallingWeb.WritingComponents, only: [type_dropdown: 1]
+  import UitstallingWeb.WritingComponents, only: [type_dropdown: 1, loading: 1]
 
-  @element_types Uitstalling.Writing.element_types()
   @themes Uitstalling.Writing.themes()
   @fonts Uitstalling.Writing.fonts()
 
@@ -34,30 +34,42 @@ defmodule UitstallingWeb.WritingProjectLive do
         {:ok,
          socket
          |> assign(
+           # The project ROW is cheap (one read, no decrypts) and render
+           # needs its theme/font immediately; the decrypt-heavy title +
+           # docs list stream in from the ProjectServer's cache.
+           project: Writing.get_project!(project_id, user.id),
+           loaded: false,
+           title: nil,
+           page_title: "…",
+           docs: [],
            renaming: false,
            create_error: nil,
+           active_types: Writing.active_element_types(user),
+           registry: Writing.element_type_registry(user),
            element_type: "character",
            type_menu: false
          )
-         |> load_project(project_id)}
+         |> start_async(:load, fn ->
+           {ProjectServer.title(project_id), ProjectServer.list_docs(project_id)}
+         end)}
     end
   end
 
-  defp load_project(socket, project_id) do
-    project = Writing.get_project!(project_id, socket.assigns.current_user.id)
-    title = Writing.project_title(project)
+  def handle_async(:load, {:ok, {title, docs}}, socket) do
+    {:noreply, assign(socket, loaded: true, title: title, page_title: title, docs: docs)}
+  end
 
-    assign(socket,
-      project: project,
-      title: title,
-      page_title: title,
-      docs: Writing.list_docs(project)
-    )
+  def handle_async(:load, {:exit, reason}, socket) do
+    require Logger
+    Logger.error("writing project load failed: #{inspect(reason)}")
+
+    {:noreply,
+     socket |> put_flash(:error, "Couldn't open that project.") |> redirect(to: ~p"/write")}
   end
 
   def handle_event("create_doc", %{"title" => title, "kind" => kind}, socket)
       when kind in ~w(chapter planning) do
-    case Writing.create_doc(socket.assigns.project, kind, title) do
+    case ProjectServer.create_doc(socket.assigns.project.id, kind, title) do
       {:ok, doc_id} ->
         {:noreply, push_navigate(socket, to: ~p"/write/#{socket.assigns.project.id}/#{doc_id}")}
 
@@ -67,7 +79,11 @@ defmodule UitstallingWeb.WritingProjectLive do
   end
 
   def handle_event("create_element", %{"name" => name}, socket) do
-    case Writing.create_element(socket.assigns.project, socket.assigns.element_type, name) do
+    case ProjectServer.create_element(
+           socket.assigns.project.id,
+           socket.assigns.element_type,
+           name
+         ) do
       {:ok, doc_id} ->
         {:noreply, push_navigate(socket, to: ~p"/write/#{socket.assigns.project.id}/#{doc_id}")}
 
@@ -80,8 +96,14 @@ defmodule UitstallingWeb.WritingProjectLive do
     {:noreply, assign(socket, type_menu: not socket.assigns.type_menu)}
   end
 
-  def handle_event("pick_type", %{"type" => type}, socket) when type in @element_types do
-    {:noreply, assign(socket, element_type: type, type_menu: false)}
+  def handle_event("pick_type", %{"type" => type}, socket) do
+    # Runtime membership — the active set is per-user, so it can't be a
+    # compile-time guard.
+    if type in Enum.map(socket.assigns.active_types, & &1.key) do
+      {:noreply, assign(socket, element_type: type, type_menu: false)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("start_rename", _params, socket) do
@@ -93,9 +115,10 @@ defmodule UitstallingWeb.WritingProjectLive do
   end
 
   def handle_event("save_title", %{"title" => title}, socket) do
-    case Writing.rename_project(socket.assigns.project, title) do
+    case ProjectServer.rename_project(socket.assigns.project.id, title) do
       :ok ->
-        {:noreply, socket |> assign(renaming: false) |> load_project(socket.assigns.project.id)}
+        title = ProjectServer.title(socket.assigns.project.id)
+        {:noreply, assign(socket, renaming: false, title: title, page_title: title)}
 
       {:error, _} ->
         {:noreply, assign(socket, renaming: false)}
@@ -104,22 +127,30 @@ defmodule UitstallingWeb.WritingProjectLive do
 
   def handle_event("set_theme", %{"theme" => theme}, socket) when theme in @themes do
     :ok = Writing.set_theme(socket.assigns.project, theme)
-    {:noreply, load_project(socket, socket.assigns.project.id)}
+    {:noreply, reload_row(socket)}
   end
 
   def handle_event("set_font", %{"font" => font}, socket) when font in @fonts do
     :ok = Writing.set_font(socket.assigns.project, font)
-    {:noreply, load_project(socket, socket.assigns.project.id)}
+    {:noreply, reload_row(socket)}
   end
 
   def handle_event("delete_doc", %{"id" => doc_id}, socket) do
-    :ok = Writing.delete_doc(socket.assigns.project, doc_id)
-    {:noreply, load_project(socket, socket.assigns.project.id)}
+    :ok = ProjectServer.delete_doc(socket.assigns.project.id, doc_id)
+    {:noreply, assign(socket, docs: ProjectServer.list_docs(socket.assigns.project.id))}
   end
 
   def handle_event("delete_project", _params, socket) do
-    :ok = Writing.delete_project(socket.assigns.project)
+    :ok = ProjectServer.delete_project(socket.assigns.project.id)
     {:noreply, push_navigate(socket, to: ~p"/write")}
+  end
+
+  defp reload_row(socket) do
+    assign(
+      socket,
+      :project,
+      Writing.get_project!(socket.assigns.project.id, socket.assigns.current_user.id)
+    )
   end
 
   def render(assigns) do
@@ -133,7 +164,9 @@ defmodule UitstallingWeb.WritingProjectLive do
 
     ~H"""
     <main class={["min-h-dvh px-8 sm:px-16 py-16", @font, @palette.bg, @palette.ink]}>
-      <div class="max-w-3xl mx-auto">
+      <.loading :if={not @loaded} palette={@palette} label="opening your project…" />
+
+      <div :if={@loaded} class="max-w-3xl mx-auto">
         <header>
           <div class="flex items-center justify-between gap-4 flex-wrap">
             <.link
@@ -262,7 +295,7 @@ defmodule UitstallingWeb.WritingProjectLive do
               navigate={~p"/write/#{@project.id}/#{element.id}"}
               class={[
                 "inline-flex items-center gap-2 rounded-full ring-1 px-3 py-1.5 text-sm font-semibold transition",
-                WritingComponents.element_chip(element.element_type, @palette.light),
+                WritingComponents.element_chip(@registry, element.element_type, @palette.light),
                 @palette.hover
               ]}
             >
@@ -275,12 +308,19 @@ defmodule UitstallingWeb.WritingProjectLive do
 
           <form phx-submit="create_element" class="mt-4 flex items-center gap-3 flex-wrap">
             <.type_dropdown
+              types={@active_types}
               picked={@element_type}
               open={@type_menu}
               toggle="toggle_type_menu"
               pick="pick_type"
               palette={@palette}
             />
+            <.link
+              navigate={~p"/write/settings"}
+              class={["font-mono text-[10px] self-center", @palette.faint, "hover:underline"]}
+            >
+              manage tags →
+            </.link>
             <input
               type="text"
               name="name"

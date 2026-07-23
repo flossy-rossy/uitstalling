@@ -1,5 +1,7 @@
 defmodule UitstallingWeb.WritingLiveTest do
-  use UitstallingWeb.ConnCase, async: true
+  # async: false — the async mounts + per-project ProjectServer run in
+  # spawned processes, which need the sandbox in shared mode.
+  use UitstallingWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import Uitstalling.Fixtures
@@ -7,6 +9,17 @@ defmodule UitstallingWeb.WritingLiveTest do
   alias Uitstalling.Writing
 
   setup %{conn: conn} do
+    # The ProjectServer runs under the app's DynamicSupervisor (not the test),
+    # so make the sandbox connection reachable from it and the async tasks,
+    # and reap any servers a test leaves behind so the next test starts clean.
+    Ecto.Adapters.SQL.Sandbox.mode(Uitstalling.Repo, {:shared, self()})
+
+    on_exit(fn ->
+      for {_, pid, _, _} <- DynamicSupervisor.which_children(Uitstalling.Writing.ServerSupervisor) do
+        DynamicSupervisor.terminate_child(Uitstalling.Writing.ServerSupervisor, pid)
+      end
+    end)
+
     %{user: user, project: project} = writing_project_fixture(title: "The Hollow Coast")
     conn = Plug.Test.init_test_session(conn, %{"user_id" => user.id})
     %{conn: conn, user: user, project: project}
@@ -30,9 +43,9 @@ defmodule UitstallingWeb.WritingLiveTest do
   end
 
   test "the shelf lists projects and creates new ones", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/write")
+    {:ok, view, _html} = live(conn, "/write")
 
-    assert html =~ "The Hollow Coast"
+    assert render_async(view) =~ "The Hollow Coast"
 
     assert {:error, {:live_redirect, %{to: "/write/" <> _id}}} =
              view
@@ -41,9 +54,9 @@ defmodule UitstallingWeb.WritingLiveTest do
   end
 
   test "the project page creates chapters and planning sheets", %{conn: conn, project: project} do
-    {:ok, view, html} = live(conn, "/write/#{project.id}")
+    {:ok, view, _html} = live(conn, "/write/#{project.id}")
 
-    assert html =~ "The Hollow Coast"
+    assert render_async(view) =~ "The Hollow Coast"
 
     assert {:error, {:live_redirect, %{to: to}}} =
              view |> form("#new-chapter-form", %{title: "One"}) |> render_submit()
@@ -51,6 +64,69 @@ defmodule UitstallingWeb.WritingLiveTest do
     assert to =~ "/write/#{project.id}/"
     assert [%{kind: "chapter", title: "One"}] = Writing.list_docs(project)
   end
+
+  describe "tag settings" do
+    test "default project dropdown shows only core types, not the full gallery", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, "/write/#{project.id}")
+      render_async(view)
+      view |> element("button[phx-click=toggle_type_menu]") |> render_click()
+
+      # Core is offered as a dropdown option…
+      assert has_element?(view, "button[phx-value-type=character]")
+      # …a curated type is not, until enabled.
+      refute has_element?(view, "button[phx-value-type=faction]")
+    end
+
+    test "the settings page toggles a curated type and adds a custom one", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, view, html} = live(conn, "/write/settings")
+
+      assert html =~ "Your tags"
+      # Enable a curated type.
+      view |> element("button[phx-value-type=faction]") |> render_click()
+      assert "faction" in Uitstalling.Accounts.settings(reload(user)).enabled_element_types
+
+      # Add a custom type (amber is the default picked colour).
+      view |> form("form[phx-submit=add_custom]", %{label: "Magic System"}) |> render_submit()
+
+      assert [%{key: "magic_system", label: "Magic System"}] =
+               Uitstalling.Accounts.settings(reload(user)).custom_element_types
+    end
+
+    test "an enabled curated type and a custom type reach a project's create dropdown", %{
+      conn: conn,
+      user: user,
+      project: project
+    } do
+      {:ok, _} =
+        Uitstalling.Accounts.update_settings(user, %{
+          "enabled_element_types" => ["faction"],
+          "custom_element_types" => [%{"label" => "Magic System", "color" => "teal"}]
+        })
+
+      {:ok, view, _html} = live(conn, "/write/#{project.id}")
+      render_async(view)
+      view |> element("button[phx-click=toggle_type_menu]") |> render_click()
+
+      assert has_element?(view, "button[phx-value-type=faction]")
+      assert has_element?(view, "button[phx-value-type=magic_system]")
+
+      # And a custom-typed element can be created + shows up (by title) on the
+      # page. Through the ProjectServer, like the UI does, so its cache is fresh.
+      {:ok, _} =
+        Uitstalling.Writing.ProjectServer.create_element(project.id, "magic_system", "The Weave")
+
+      {:ok, view, _} = live(conn, "/write/#{project.id}")
+      assert render_async(view) =~ "The Weave"
+    end
+  end
+
+  defp reload(user), do: Uitstalling.Accounts.get_user(user.id)
 
   describe "the editor" do
     setup %{project: project} do
@@ -63,7 +139,8 @@ defmodule UitstallingWeb.WritingLiveTest do
       project: project,
       doc_id: doc_id
     } do
-      {:ok, view, html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      html = render_async(view)
 
       assert html =~ "Chapter One"
       assert html =~ "0 words"
@@ -83,31 +160,31 @@ defmodule UitstallingWeb.WritingLiveTest do
       assert render(view) =~ "8 words"
     end
 
-    test "Enter splits a paragraph; Backspace-at-start merges it back", %{
+    test "a prose block holds many paragraphs as one newline-separated field", %{
       conn: conn,
       project: project,
       doc_id: doc_id
     } do
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
       {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
       [%{"id" => block}] = raw["blocks"]
 
-      render_hook(view, "split_block", %{
+      # Enter is a native newline now — a whole scene of paragraphs is one
+      # save on the single block, not an op per Return.
+      render_hook(view, "save_block", %{
         "id" => block,
-        "text" => "One half. Other half.",
-        "at" => 10
+        "field" => "text",
+        "value" => "First paragraph.\nSecond paragraph.\nThird."
       })
 
-      {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
+      {raw, seq, _} = Writing.checkout_doc(project, doc_id)
+      assert seq == 2
+      assert [%{"text" => "First paragraph.\nSecond paragraph.\nThird."}] = raw["blocks"]
 
-      assert [%{"text" => "One half. "}, %{"id" => second, "text" => "Other half."}] =
-               raw["blocks"]
-
-      render_hook(view, "merge_block", %{"id" => second, "text" => "Other half."})
-
-      {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
-      assert [%{"text" => "One half. Other half."}] = raw["blocks"]
+      # One event for the whole edit — no per-newline history clutter.
+      assert [%{type: "ops.applied"}, %{type: "doc.created"}] = Writing.events(project, doc_id)
     end
 
     test "undo works from the UI and survives a remount (event log, not socket)", %{
@@ -116,6 +193,7 @@ defmodule UitstallingWeb.WritingLiveTest do
       doc_id: doc_id
     } do
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
       {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
       [%{"id" => block}] = raw["blocks"]
@@ -124,6 +202,7 @@ defmodule UitstallingWeb.WritingLiveTest do
 
       # A fresh mount (refresh) can still undo — the stack is the event log.
       {:ok, view2, _} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view2)
       view2 |> element("button[phx-click=undo]") |> render_click()
 
       {raw, _seq, _} = Writing.checkout_doc(project, doc_id)
@@ -137,6 +216,7 @@ defmodule UitstallingWeb.WritingLiveTest do
     } do
       {:ok, mira} = Writing.create_element(project, "character", "Mira")
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
       # Picker offers the element; tagging links them.
       html = view |> element("button[phx-click=toggle_tag_picker]") |> render_click()
@@ -147,7 +227,8 @@ defmodule UitstallingWeb.WritingLiveTest do
       assert render(view) =~ "Mira"
 
       # The element's page shows the chapter back (and its type badge).
-      {:ok, _view, element_html} = live(conn, "/write/#{project.id}/#{mira}")
+      {:ok, element_view, _} = live(conn, "/write/#{project.id}/#{mira}")
+      element_html = render_async(element_view)
       assert element_html =~ "Chapter One"
       assert element_html =~ "character"
 
@@ -155,18 +236,18 @@ defmodule UitstallingWeb.WritingLiveTest do
       assert Writing.linked_docs(project, doc_id) == []
     end
 
-    test "create_and_tag mints a new element of the picked type and links it", %{
+    test "the tag picker only offers existing docs, with a hint when there are none", %{
       conn: conn,
       project: project,
       doc_id: doc_id
     } do
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
-      render_hook(view, "pick_tag_type", %{"type" => "faction"})
-      render_hook(view, "create_and_tag", %{"name" => "The Order"})
-
-      assert [%{title: "The Order", element_type: "faction"}] =
-               Writing.linked_docs(project, doc_id)
+      # No elements yet: the picker guides you to a plan map, not a create form.
+      html = view |> element("button[phx-click=toggle_tag_picker]") |> render_click()
+      assert html =~ "Nothing to tag yet"
+      refute html =~ "New element…"
     end
 
     test "adding a tag closes the picker instead of leaving it hanging open", %{
@@ -176,6 +257,7 @@ defmodule UitstallingWeb.WritingLiveTest do
     } do
       {:ok, mira} = Writing.create_element(project, "character", "Mira")
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
       view |> element("button[phx-click=toggle_tag_picker]") |> render_click()
       html = render_hook(view, "add_tag", %{"id" => mira})
@@ -203,8 +285,8 @@ defmodule UitstallingWeb.WritingLiveTest do
       {:ok, _, _} = Writing.apply_ops(project, mira, ops, seq, "u1")
 
       # The editor renders the owner-only image route.
-      {:ok, _view, html} = live(conn, "/write/#{project.id}/#{mira}")
-      assert html =~ "/write/#{project.id}/image/#{image_id}"
+      {:ok, view, _html} = live(conn, "/write/#{project.id}/#{mira}")
+      assert render_async(view) =~ "/write/#{project.id}/image/#{image_id}"
 
       # Owner gets bytes; anyone else a 404.
       assert conn |> get("/write/#{project.id}/image/#{image_id}") |> response(200) == png
@@ -224,6 +306,7 @@ defmodule UitstallingWeb.WritingLiveTest do
       {:ok, map_id} = Writing.create_doc(project, "planning", "People")
 
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{map_id}")
+      render_async(view)
 
       render_hook(view, "map_add", %{"doc" => mira})
       render_hook(view, "map_add", %{"doc" => order})
@@ -282,6 +365,7 @@ defmodule UitstallingWeb.WritingLiveTest do
       doc_id: doc_id
     } do
       {:ok, view, _html} = live(conn, "/write/#{project.id}/#{doc_id}")
+      render_async(view)
 
       render_hook(view, "add_block", %{"type" => "heading"})
       # character cards are planning-only; a chapter refuses them.

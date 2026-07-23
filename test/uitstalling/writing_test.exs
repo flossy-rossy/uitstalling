@@ -345,9 +345,14 @@ defmodule Uitstalling.WritingTest do
                "u1"
              )
 
-    assert_raise FunctionClauseError, fn ->
-      Writing.create_element(project, "spaceship", "Nope")
-    end
+    # Types are per-user now: the context validates the type STRUCTURALLY
+    # (a slug), not against a fixed enum — the "may this user use it" gate
+    # lives at the LiveView. So a well-formed custom-shaped key is accepted…
+    assert {:ok, _} = Writing.create_element(project, "spaceship", "Nought")
+
+    # …but a non-slug is rejected, and the element/kind rules still hold.
+    assert {:error, ["element_type: invalid"]} =
+             Writing.create_element(project, "Not A Slug!", "Nope")
 
     assert {:error, ["element_type: required"]} = Writing.create_doc(project, "element", "Nope")
 

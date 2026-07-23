@@ -69,6 +69,9 @@ defmodule UitstallingWeb.Router do
 
     live_session :writing, layout: false, on_mount: {UitstallingWeb.UserAuth, :default} do
       live "/write", WritingLive, :index
+      # Before /write/:project_id so the literal path wins (project ids are
+      # random hex, so no real project can be "settings").
+      live "/write/settings", WritingSettingsLive, :show
       live "/write/:project_id", WritingProjectLive, :show
       live "/write/:project_id/map", WritingMapLive, :show
       live "/write/:project_id/:doc_id", WritingDocLive, :show

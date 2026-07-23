@@ -17,6 +17,8 @@ defmodule Uitstalling.Accounts.User do
     field :slug, :string
     field :anonymous, :boolean, default: true
 
+    embeds_one :settings, Uitstalling.Accounts.UserSettings, on_replace: :update
+
     has_many :decks, Uitstalling.Decks.Stored
 
     timestamps(type: :utc_datetime)

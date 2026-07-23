@@ -16,6 +16,10 @@ defmodule Uitstalling.Application do
         # Per-deck request workers, started on demand via DeckWorker.kick/1
         {Registry, keys: :unique, name: Uitstalling.Decks.Registry},
         {DynamicSupervisor, name: Uitstalling.Decks.WorkerSupervisor, strategy: :one_for_one},
+        # Per-writing-project cache/serializer, started on demand
+        # (Writing.ProjectServer.ensure/1)
+        {Registry, keys: :unique, name: Uitstalling.Writing.Registry},
+        {DynamicSupervisor, name: Uitstalling.Writing.ServerSupervisor, strategy: :one_for_one},
         # Token → generated-PDF handoff between LiveView and the download route
         Uitstalling.Decks.PdfStore
       ] ++

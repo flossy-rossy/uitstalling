@@ -39,7 +39,39 @@ defmodule Uitstalling.Writing do
   # the story world (a character, a faction, …) — a full doc like the others,
   # so elements get the same encrypted body, event log, and undo.
   @kinds ~w(chapter planning element)
-  @element_types ~w(character family faction nation location theme object arc)
+
+  # Plan-element types are per-user now (docs/writing.md): a small always-on
+  # CORE, a CURATED gallery the user opts into, and up to 5 custom types.
+  # Each built-in maps to a color SLOT (a plain name); WritingComponents turns
+  # a slot into Tailwind classes — custom types pick a slot too, which is what
+  # keeps their colour inside Tailwind's build-time constraint.
+  @core_element_types ~w(character location object)
+  @curated_element_types ~w(family faction nation theme arc event creature organization)
+
+  @element_type_catalog %{
+    "character" => %{label: "character", color: "amber"},
+    "location" => %{label: "location", color: "emerald"},
+    "object" => %{label: "object", color: "sky"},
+    "family" => %{label: "family", color: "fuchsia"},
+    "faction" => %{label: "faction", color: "rose"},
+    "nation" => %{label: "nation", color: "red"},
+    "theme" => %{label: "theme", color: "violet"},
+    "arc" => %{label: "arc", color: "indigo"},
+    "event" => %{label: "event", color: "orange"},
+    "creature" => %{label: "creature", color: "teal"},
+    "organization" => %{label: "organization", color: "cyan"}
+  }
+
+  # Colour slots a custom type may choose from (all have Tailwind classes in
+  # WritingComponents). The doc-kind fallbacks (chapter/planning) use their
+  # own neutral slots and are not offered here.
+  @color_slots ~w(amber emerald sky fuchsia rose red violet indigo orange teal cyan lime)
+
+  # Colours for the non-element doc kinds, so the registry can render a
+  # chapter/plan-map chip too.
+  @kind_colors %{"chapter" => "stone", "planning" => "slate"}
+
+  @max_custom_types 5
 
   # Reading-first surfaces: paper is the e-reader default (warm page, dark
   # ink), plain is pure black-on-white; the deck palettes come along adapted.
@@ -92,7 +124,61 @@ defmodule Uitstalling.Writing do
   @counted_fields ~w(text name label source)
 
   def kinds, do: @kinds
-  def element_types, do: @element_types
+  def core_element_types, do: @core_element_types
+  def curated_element_types, do: @curated_element_types
+  def color_slots, do: @color_slots
+  def max_custom_types, do: @max_custom_types
+
+  @doc "Every built-in element type key (core ++ curated)."
+  def builtin_element_types, do: @core_element_types ++ @curated_element_types
+
+  @doc "The built-in catalog: `%{key => %{label, color}}` for core + curated."
+  def element_type_catalog, do: @element_type_catalog
+
+  @doc """
+  The element types a user may create right now, ordered for the dropdown:
+  core, then the curated ones they enabled, then their custom types. Each is
+  `%{key, label, color}`.
+  """
+  def active_element_types(user) do
+    settings = user_settings(user)
+    enabled = MapSet.new(settings.enabled_element_types)
+
+    core = Enum.map(@core_element_types, &catalog_entry/1)
+    curated = for k <- @curated_element_types, MapSet.member?(enabled, k), do: catalog_entry(k)
+
+    custom =
+      for c <- settings.custom_element_types,
+          do: %{key: c.key, label: c.label, color: c.color}
+
+    core ++ curated ++ custom
+  end
+
+  @doc """
+  Colour/label lookup for ANY type a doc might carry — every built-in (so an
+  existing element of a not-currently-enabled type still renders its real
+  colour), this user's custom types, plus the chapter/planning kind
+  fallbacks. `%{key => %{label, color}}`.
+  """
+  def element_type_registry(user) do
+    custom =
+      for c <- user_settings(user).custom_element_types,
+          into: %{},
+          do: {c.key, %{label: c.label, color: c.color}}
+
+    kinds = for {k, color} <- @kind_colors, into: %{}, do: {k, %{label: k, color: color}}
+
+    @element_type_catalog |> Map.merge(custom) |> Map.merge(kinds)
+  end
+
+  defp catalog_entry(key) do
+    %{label: @element_type_catalog[key].label, color: @element_type_catalog[key].color, key: key}
+  end
+
+  # Settings may be absent (older rows / never-saved) — treat as defaults.
+  defp user_settings(%{settings: %Uitstalling.Accounts.UserSettings{} = s}), do: s
+  defp user_settings(_user), do: %Uitstalling.Accounts.UserSettings{}
+
   def themes, do: @themes
   def fonts, do: @fonts
   def block_types(kind), do: @kind_types[kind] || []
@@ -239,50 +325,95 @@ defmodule Uitstalling.Writing do
   has a t₀. Element docs must say which `element_type:` they are.
   """
   def create_doc(%Project{} = project, kind, title, opts \\ []) when kind in @kinds do
-    element_type = opts[:element_type]
-
-    with {:ok, title} <- clean_title(title),
-         :ok <- check_element_type(kind, element_type) do
-      id = generate_id()
-      dek = dek(project)
-      raw = migrate(%{"blocks" => initial_blocks(kind, element_type)})
-      {:ok, _} = parse(raw, kind)
-
-      position =
-        Repo.one(
-          from(d in Doc,
-            where: d.project_id == ^project.id and d.kind == ^kind,
-            select: coalesce(max(d.position), -1)
-          )
-        ) + 1
-
-      {:ok, _} =
-        Repo.transaction(fn ->
-          Repo.insert!(%Doc{
-            id: id,
-            project_id: project.id,
-            kind: kind,
-            element_type: element_type,
-            position: position,
-            title_enc: Vault.encrypt(dek, title, id),
-            data_enc: encrypt_map(dek, raw, id),
-            seq: 1,
-            word_count: 0
-          })
-
-          insert_event!(dek, id, 1, "doc.created", "system", "editor", nil, %{"doc" => raw})
-        end)
-
+    with {:ok, staged} <- stage_doc(project, kind, title, opts),
+         id = generate_id(),
+         {:ok, _meta} <- persist_staged_doc(project, id, staged) do
       {:ok, id}
     end
   end
 
-  @doc "Create a plan element (a doc of kind \"element\") — its title is its name."
-  def create_element(%Project{} = project, type, name) when type in @element_types do
+  @doc """
+  Create a plan element (a doc of kind \"element\") — its title is its name.
+  `type` is validated structurally here; whether it's a type THIS user may
+  use is gated at the LiveView (which knows the current user's active set),
+  matching the app's authz-at-the-edge, structural-in-the-context split.
+  """
+  def create_element(%Project{} = project, type, name) do
     create_doc(project, "element", name, element_type: type)
   end
 
-  defp check_element_type("element", type) when type in @element_types, do: :ok
+  @doc """
+  Everything about a new doc that can be decided without the database —
+  validated title, kind, and the initial body. The ProjectServer stages,
+  replies to its caller, THEN persists (`persist_staged_doc/3`), so creating
+  feels instant on a slow machine while staying validated up front.
+  """
+  def stage_doc(%Project{}, kind, title, opts) when kind in @kinds do
+    element_type = opts[:element_type]
+
+    with {:ok, title} <- clean_title(title),
+         :ok <- check_element_type(kind, element_type) do
+      raw = migrate(%{"blocks" => initial_blocks(kind, element_type)})
+      {:ok, _} = parse(raw, kind)
+
+      {:ok, %{kind: kind, element_type: element_type, title: title, raw: raw}}
+    end
+  end
+
+  @doc "Insert a staged doc under `id`. Returns its `list_docs/1`-shaped meta row."
+  def persist_staged_doc(%Project{} = project, id, staged) do
+    dek = dek(project)
+
+    position =
+      Repo.one(
+        from(d in Doc,
+          where: d.project_id == ^project.id and d.kind == ^staged.kind,
+          select: coalesce(max(d.position), -1)
+        )
+      ) + 1
+
+    {:ok, doc} =
+      Repo.transaction(fn ->
+        doc =
+          Repo.insert!(%Doc{
+            id: id,
+            project_id: project.id,
+            kind: staged.kind,
+            element_type: staged.element_type,
+            position: position,
+            title_enc: Vault.encrypt(dek, staged.title, id),
+            data_enc: encrypt_map(dek, staged.raw, id),
+            seq: 1,
+            word_count: 0
+          })
+
+        insert_event!(dek, id, 1, "doc.created", "system", "editor", nil, %{"doc" => staged.raw})
+
+        doc
+      end)
+
+    {:ok,
+     %{
+       id: id,
+       kind: staged.kind,
+       element_type: staged.element_type,
+       title: staged.title,
+       position: position,
+       seq: 1,
+       word_count: 0,
+       updated_at: doc.updated_at
+     }}
+  rescue
+    e -> {:error, e}
+  end
+
+  # Structural only — a non-empty slug-shaped key up to 32 chars (built-in or
+  # custom). "Is this a type the user may create" is the LiveView's call.
+  defp check_element_type("element", type)
+       when is_binary(type) and byte_size(type) in 1..32 do
+    if type =~ ~r/^[a-z][a-z0-9_]*$/, do: :ok, else: {:error, ["element_type: invalid"]}
+  end
+
   defp check_element_type("element", _type), do: {:error, ["element_type: required"]}
   defp check_element_type(_kind, nil), do: :ok
 

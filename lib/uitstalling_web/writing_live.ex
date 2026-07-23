@@ -10,6 +10,8 @@ defmodule UitstallingWeb.WritingLive do
   alias Uitstalling.Writing
   alias UitstallingWeb.WritingComponents
 
+  import UitstallingWeb.WritingComponents, only: [loading: 1]
+
   def mount(_params, _session, socket) do
     user = socket.assigns.current_user
 
@@ -25,13 +27,23 @@ defmodule UitstallingWeb.WritingLive do
          socket |> put_flash(:error, "Writing is for registered accounts") |> redirect(to: ~p"/")}
 
       true ->
+        # Each project title is a decrypt; the whole shelf is the sum of them,
+        # so stream it in rather than block the mount on a slow machine.
         {:ok,
-         assign(socket,
-           page_title: "Writing",
-           projects: Writing.list_projects(user.id),
-           create_error: nil
-         )}
+         socket
+         |> assign(page_title: "Writing", loaded: false, projects: [], create_error: nil)
+         |> start_async(:load, fn -> Writing.list_projects(user.id) end)}
     end
+  end
+
+  def handle_async(:load, {:ok, projects}, socket) do
+    {:noreply, assign(socket, loaded: true, projects: projects)}
+  end
+
+  def handle_async(:load, {:exit, reason}, socket) do
+    require Logger
+    Logger.error("writing shelf load failed: #{inspect(reason)}")
+    {:noreply, assign(socket, loaded: true, projects: [])}
   end
 
   def handle_event("create_project", %{"title" => title}, socket) do
@@ -57,9 +69,17 @@ defmodule UitstallingWeb.WritingLive do
             </p>
             <h1 class="mt-4 text-5xl font-bold leading-tight">Your shelf.</h1>
           </div>
-          <.link navigate={~p"/"} class={["font-mono text-xs", @palette.muted, "hover:underline"]}>
-            ← home
-          </.link>
+          <div class="flex flex-col items-end gap-1">
+            <.link navigate={~p"/"} class={["font-mono text-xs", @palette.muted, "hover:underline"]}>
+              ← home
+            </.link>
+            <.link
+              navigate={~p"/write/settings"}
+              class={["font-mono text-xs", @palette.muted, "hover:underline"]}
+            >
+              your tags →
+            </.link>
+          </div>
         </header>
 
         <form phx-submit="create_project" class="mt-12 flex gap-3 max-w-xl">
@@ -85,11 +105,13 @@ defmodule UitstallingWeb.WritingLive do
         <p :if={@create_error} class="mt-2 text-sm text-red-700">{@create_error}</p>
 
         <section class="mt-14">
-          <p :if={@projects == []} class={["text-lg", @palette.muted]}>
+          <.loading :if={not @loaded} palette={@palette} label="pulling your shelf together…" />
+
+          <p :if={@loaded and @projects == []} class={["text-lg", @palette.muted]}>
             Nothing on the shelf yet — every novel starts with a title (or a working one).
           </p>
 
-          <div class="grid gap-4">
+          <div :if={@loaded} class="grid gap-4">
             <.link
               :for={project <- @projects}
               navigate={~p"/write/#{project.id}"}

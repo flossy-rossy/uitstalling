@@ -28,12 +28,13 @@ defmodule UitstallingWeb.WritingMapLive do
 
       true ->
         project = Writing.get_project!(project_id, user.id)
+        registry = Writing.element_type_registry(user)
         graph = Writing.graph(project)
 
         payload = %{
           nodes:
             Enum.map(graph.nodes, fn node ->
-              Map.put(node, :color, WritingComponents.element_hex(node.type))
+              Map.put(node, :color, WritingComponents.element_hex(registry, node.type))
             end),
           edges: graph.edges
         }
@@ -41,6 +42,7 @@ defmodule UitstallingWeb.WritingMapLive do
         {:ok,
          assign(socket,
            project: project,
+           registry: registry,
            project_title: Writing.project_title(project),
            page_title: "Story map",
            graph_json: Jason.encode!(payload),
@@ -82,7 +84,7 @@ defmodule UitstallingWeb.WritingMapLive do
             >
               <span
                 class="inline-block w-2 h-2 rounded-full"
-                style={"background: #{WritingComponents.element_hex(type)}"}
+                style={"background: #{WritingComponents.element_hex(@registry, type)}"}
               ></span>
               {type}
             </span>

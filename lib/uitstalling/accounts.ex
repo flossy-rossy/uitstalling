@@ -12,12 +12,27 @@ defmodule Uitstalling.Accounts do
 
   import Ecto.Query
 
-  alias Uitstalling.Accounts.{Invite, User, WebauthnCredential}
+  alias Uitstalling.Accounts.{Invite, User, UserSettings, WebauthnCredential}
   alias Uitstalling.Repo
   alias Uitstalling.Slug
 
   def get_user(nil), do: nil
   def get_user(id), do: Repo.get(User, id)
+
+  @doc "A user's settings, defaulting when never saved."
+  def settings(%User{settings: %UserSettings{} = s}), do: s
+  def settings(%User{}), do: %UserSettings{}
+
+  @doc """
+  Update a user's settings from `attrs` (a map with `enabled_element_types`
+  and/or `custom_element_types`). Returns `{:ok, user}` or `{:error, changeset}`.
+  """
+  def update_settings(%User{} = user, attrs) do
+    user
+    |> Ecto.Changeset.cast(%{"settings" => attrs}, [])
+    |> Ecto.Changeset.cast_embed(:settings, with: &UserSettings.changeset/2)
+    |> Repo.update()
+  end
 
   def get_user_by_email(email) when is_binary(email), do: Repo.get_by(User, email: email)
 

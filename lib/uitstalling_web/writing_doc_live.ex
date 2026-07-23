@@ -1,15 +1,24 @@
 defmodule UitstallingWeb.WritingDocLive do
   @moduledoc """
-  The writing editor: one doc (chapter or planning sheet) as a column of
+  The writing editor: one doc (chapter, plan map, or element) as a column of
   block editors that read like a page. Every change is an op batch through
   `Writing.apply_ops/6` — CAS'd, event-logged, undoable.
+
+  A prose block holds MANY paragraphs (newline-separated). Enter is just a
+  newline in the textarea — client-side, no op, no event: pressing Return a
+  hundred times while drafting must not append a hundred events. New blocks
+  are for real structure only — a scene break, a heading, a new section —
+  added deliberately from the + bar. So ops fire on the debounced text save
+  (per typing pause / on blur) and on explicit structure, never per keystroke.
+  Fine-grained undo while writing is the browser's own textarea undo; the
+  event log is the coarser "restore this version" history.
 
   Typing stays client-side: block editors are `phx-update="ignore"` (a
   colocated hook debounces saves and flushes on blur), so routine commits
   never touch the DOM the writer is typing in. Structural changes
-  (split/merge/undo/retype, or another session's write) bump `@bump`, which
-  is part of every block's DOM id — the blocks remount with committed truth
-  and the hook re-focuses where the writer expects to be.
+  (add/retype/delete/undo, or another session's write) bump `@bump`, part of
+  every block's DOM id — the blocks remount with committed truth and the hook
+  re-focuses where the writer expects to be.
   """
 
   use UitstallingWeb, :live_view
@@ -17,15 +26,10 @@ defmodule UitstallingWeb.WritingDocLive do
   alias Uitstalling.Accounts
   alias Uitstalling.Writing
   alias Uitstalling.Writing.Op.{DeleteField, InsertBlock, RemoveBlock, SetField}
+  alias Uitstalling.Writing.ProjectServer
   alias UitstallingWeb.WritingComponents
 
-  import UitstallingWeb.WritingComponents, only: [type_dropdown: 1]
-
-  # Block types whose Enter splits into a new paragraph. (Merging back is
-  # decided per render: any text-bearing block that isn't first.)
-  @splittable ~w(paragraph heading)
-
-  @element_types Uitstalling.Writing.element_types()
+  import UitstallingWeb.WritingComponents, only: [type_dropdown: 1, loading: 1]
 
   def mount(%{"project_id" => project_id, "doc_id" => doc_id}, _session, socket) do
     user = socket.assigns.current_user
@@ -41,8 +45,11 @@ defmodule UitstallingWeb.WritingDocLive do
         {:ok, socket |> put_flash(:error, "No such document") |> redirect(to: ~p"/write")}
 
       true ->
+        # Cheap now: project row (theme/font for the frame) and the doc row's
+        # plaintext columns (kind/element_type drive the palette). The
+        # decrypt-heavy body, title, links and map stream in from the
+        # ProjectServer cache via start_async.
         project = Writing.get_project!(project_id, user.id)
-        {raw, seq, title} = Writing.checkout_doc(project, doc_id)
         doc = Writing.get_doc!(project, doc_id)
         topic = "writing:#{doc_id}"
 
@@ -54,17 +61,22 @@ defmodule UitstallingWeb.WritingDocLive do
          socket
          |> assign(
            project: project,
-           project_title: Writing.project_title(project),
+           project_title: nil,
            doc_id: doc_id,
            kind: doc.kind,
            element_type: doc.element_type,
            topic: topic,
-           title: title,
-           page_title: title,
-           raw: raw,
-           seq: seq,
-           words: Writing.count_words(raw),
-           linked: Writing.linked_docs(project, doc_id),
+           loaded: false,
+           title: nil,
+           page_title: "…",
+           raw: %{"blocks" => []},
+           seq: 0,
+           words: 0,
+           linked: [],
+           map_docs: %{},
+           map_edges: [],
+           active_types: Writing.active_element_types(user),
+           registry: Writing.element_type_registry(user),
            tag_picker: false,
            tag_options: [],
            tag_type: "character",
@@ -80,8 +92,45 @@ defmodule UitstallingWeb.WritingDocLive do
            max_entries: 1,
            max_file_size: 3_000_000
          )
-         |> load_map_data()}
+         |> start_async(:load, fn ->
+           {raw, seq, title} = ProjectServer.checkout_doc(project_id, doc_id)
+
+           %{
+             raw: raw,
+             seq: seq,
+             title: title,
+             project_title: ProjectServer.title(project_id),
+             linked: Writing.linked_docs(project, doc_id),
+             map: map_data(project, doc_id, doc.kind)
+           }
+         end)}
     end
+  end
+
+  def handle_async(:load, {:ok, data}, socket) do
+    {:noreply,
+     assign(socket,
+       loaded: true,
+       raw: data.raw,
+       seq: data.seq,
+       title: data.title,
+       page_title: data.title,
+       project_title: data.project_title,
+       words: Writing.count_words(data.raw),
+       linked: data.linked,
+       map_docs: data.map.docs,
+       map_edges: data.map.edges
+     )}
+  end
+
+  def handle_async(:load, {:exit, reason}, socket) do
+    require Logger
+    Logger.error("writing doc load failed: #{inspect(reason)}")
+
+    {:noreply,
+     socket
+     |> put_flash(:error, "Couldn't open that document — try again.")
+     |> redirect(to: ~p"/write/#{socket.assigns.project.id}")}
   end
 
   # ----- Text edits (from the block hook) ---------------------------------------
@@ -91,70 +140,7 @@ defmodule UitstallingWeb.WritingDocLive do
     with %{} = block <- find_block(socket.assigns.raw, id),
          true <- field in (Writing.block_keys(block["type"]) || []),
          false <- block[field] == value do
-      {_, socket} = commit(socket, [%SetField{block: id, field: field, value: value}])
-      {:noreply, socket}
-    else
-      _ -> {:noreply, socket}
-    end
-  end
-
-  def handle_event("split_block", %{"id" => id, "text" => text, "at" => at}, socket)
-      when is_binary(text) and is_integer(at) do
-    with %{} = block <- find_block(socket.assigns.raw, id),
-         true <- block["type"] in @splittable do
-      # `at` is the JS caret offset (UTF-16 units) — for the odd astral
-      # character the split lands a hair off; harmless for prose.
-      at = max(0, min(at, String.length(text)))
-      before = String.slice(text, 0, at)
-      rest = String.slice(text, at..-1//1) || ""
-
-      ops = [
-        %SetField{block: id, field: "text", value: before},
-        %InsertBlock{block: %{"type" => "paragraph", "text" => rest}, after: id}
-      ]
-
-      case commit(socket, ops, bump: true) do
-        {:ok, socket} ->
-          {:noreply, focus_after(socket, id, 0)}
-
-        {:error, socket} ->
-          {:noreply, socket}
-      end
-    else
-      _ -> {:noreply, socket}
-    end
-  end
-
-  def handle_event("merge_block", %{"id" => id, "text" => text}, socket)
-      when is_binary(text) do
-    blocks = socket.assigns.raw["blocks"]
-
-    with index when is_integer(index) and index > 0 <-
-           Enum.find_index(blocks, &(&1["id"] == id)),
-         %{} = prev <- Enum.at(blocks, index - 1) do
-      cond do
-        prev["type"] == "scene_break" ->
-          case commit(socket, [%RemoveBlock{block: prev["id"]}], bump: true) do
-            {:ok, socket} -> {:noreply, push_focus(socket, id, 0)}
-            {:error, socket} -> {:noreply, socket}
-          end
-
-        is_binary(prev["text"]) ->
-          caret = String.length(prev["text"])
-
-          ops = [
-            %SetField{block: prev["id"], field: "text", value: prev["text"] <> text},
-            %RemoveBlock{block: id}
-          ]
-
-          case commit(socket, ops, bump: true) do
-            {:ok, socket} -> {:noreply, push_focus(socket, prev["id"], caret)}
-            {:error, socket} -> {:noreply, socket}
-          end
-
-        true ->
-          {:noreply, socket}
-      end
+      {:noreply, commit(socket, [%SetField{block: id, field: field, value: value}])}
     else
       _ -> {:noreply, socket}
     end
@@ -164,14 +150,12 @@ defmodule UitstallingWeb.WritingDocLive do
 
   def handle_event("add_block", %{"type" => type}, socket) do
     if type in palette(socket.assigns.kind, socket.assigns.element_type) do
-      case commit(socket, [%InsertBlock{block: default_block(type)}], bump: true) do
-        {:ok, socket} ->
-          new_block = List.last(socket.assigns.raw["blocks"])
-          {:noreply, push_focus(socket, new_block["id"], 0)}
-
-        {:error, socket} ->
-          {:noreply, socket}
-      end
+      # Caret to the block just appended.
+      {:noreply,
+       commit(socket, [%InsertBlock{block: default_block(type)}],
+         bump: true,
+         focus: &{List.last(&1["blocks"])["id"], 0}
+       )}
     else
       {:noreply, socket}
     end
@@ -193,16 +177,14 @@ defmodule UitstallingWeb.WritingDocLive do
             &%SetField{block: id, field: &1, value: ""}
           )
 
-      {_, socket} = commit(socket, ops, bump: true)
-      {:noreply, socket}
+      {:noreply, commit(socket, ops, bump: true)}
     else
       _ -> {:noreply, assign(socket, menu: nil)}
     end
   end
 
   def handle_event("delete_block", %{"id" => id}, socket) do
-    {_, socket} = commit(socket, [%RemoveBlock{block: id}], bump: true)
-    {:noreply, socket}
+    {:noreply, commit(socket, [%RemoveBlock{block: id}], bump: true)}
   end
 
   def handle_event("toggle_menu", %{"id" => id}, socket) do
@@ -238,8 +220,12 @@ defmodule UitstallingWeb.WritingDocLive do
     {:noreply, assign(socket, tag_type_menu: not socket.assigns.tag_type_menu)}
   end
 
-  def handle_event("pick_tag_type", %{"type" => type}, socket) when type in @element_types do
-    {:noreply, assign(socket, tag_type: type, tag_type_menu: false)}
+  def handle_event("pick_tag_type", %{"type" => type}, socket) do
+    if type in Enum.map(socket.assigns.active_types, & &1.key) do
+      {:noreply, assign(socket, tag_type: type, tag_type_menu: false)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # Adding a tag closes the picker — tagging is usually one element at a
@@ -254,20 +240,6 @@ defmodule UitstallingWeb.WritingDocLive do
   def handle_event("remove_tag", %{"id" => other_id}, socket) do
     :ok = Writing.unlink(socket.assigns.project, socket.assigns.doc_id, other_id)
     {:noreply, reload_links(socket)}
-  end
-
-  # Tag something that doesn't exist yet without leaving the page — the
-  # "wait, that's a new faction" moment mid-chapter.
-  def handle_event("create_and_tag", %{"name" => name}, socket) do
-    type = socket.assigns.tag_type
-
-    with {:ok, element_id} <- Writing.create_element(socket.assigns.project, type, name),
-         :ok <- Writing.link(socket.assigns.project, socket.assigns.doc_id, element_id) do
-      {:noreply, socket |> reload_links() |> assign(tag_picker: false)}
-    else
-      {:error, [error | _]} -> {:noreply, assign(socket, edit_error: error)}
-      _ -> {:noreply, socket}
-    end
   end
 
   # ----- Portraits (encrypted upload) --------------------------------------------------
@@ -295,10 +267,12 @@ defmodule UitstallingWeb.WritingDocLive do
 
     with [binary] <- bytes,
          {:ok, image_id} <- Writing.put_image(socket.assigns.project, binary) do
-      {_, socket} =
-        commit(socket, [%SetField{block: id, field: "image", value: image_id}], bump: true)
+      socket =
+        socket
+        |> commit([%SetField{block: id, field: "image", value: image_id}], bump: true)
+        |> assign(portrait_target: nil)
 
-      {:noreply, assign(socket, portrait_target: nil)}
+      {:noreply, socket}
     else
       [] -> {:noreply, socket}
       {:error, message} -> {:noreply, assign(socket, edit_error: message, portrait_target: nil)}
@@ -306,8 +280,7 @@ defmodule UitstallingWeb.WritingDocLive do
   end
 
   def handle_event("remove_portrait", %{"id" => id}, socket) do
-    {_, socket} = commit(socket, [%DeleteField{block: id, field: "image"}], bump: true)
-    {:noreply, socket}
+    {:noreply, commit(socket, [%DeleteField{block: id, field: "image"}], bump: true)}
   end
 
   # ----- Plan map (kind "planning": placed dots + connections) ---------------------------
@@ -316,25 +289,25 @@ defmodule UitstallingWeb.WritingDocLive do
     placed = placed_doc_ids(socket.assigns.raw)
 
     if Map.has_key?(socket.assigns.map_docs, other_id) and other_id not in placed do
-      {_, socket} =
-        commit(socket, [%InsertBlock{block: new_node(other_id, length(placed))}], bump: true)
-
-      {:noreply, socket}
+      {:noreply,
+       commit(socket, [%InsertBlock{block: new_node(other_id, length(placed))}], bump: true)}
     else
       {:noreply, socket}
     end
   end
 
   def handle_event("map_create", %{"name" => name}, socket) do
-    type = socket.assigns.tag_type
+    %{project: project, doc_id: doc_id, kind: kind, tag_type: type} = socket.assigns
 
-    case Writing.create_element(socket.assigns.project, type, name) do
+    case ProjectServer.create_element(project.id, type, name) do
       {:ok, element_id} ->
-        socket = load_map_data(socket)
         placed = placed_doc_ids(socket.assigns.raw)
+        map = map_data(project, doc_id, kind)
 
-        {_, socket} =
-          commit(socket, [%InsertBlock{block: new_node(element_id, length(placed))}], bump: true)
+        socket =
+          socket
+          |> assign(map_docs: map.docs, map_edges: map.edges)
+          |> commit([%InsertBlock{block: new_node(element_id, length(placed))}], bump: true)
 
         {:noreply, socket}
 
@@ -352,26 +325,29 @@ defmodule UitstallingWeb.WritingDocLive do
       ]
 
       # No bump: the drag already moved the dot; a remount would stutter.
-      {_, socket} = commit(socket, ops)
-      {:noreply, socket}
+      {:noreply, commit(socket, ops)}
     else
       _ -> {:noreply, socket}
     end
   end
 
   def handle_event("map_connect", %{"a" => a, "b" => b}, socket) do
+    %{project: project, doc_id: doc_id, kind: kind} = socket.assigns
+
     with %{"type" => "node", "doc" => doc_a} <- find_block(socket.assigns.raw, a),
          %{"type" => "node", "doc" => doc_b} <- find_block(socket.assigns.raw, b),
-         :ok <- Writing.link(socket.assigns.project, doc_a, doc_b) do
-      {:noreply, socket |> load_map_data() |> assign(bump: socket.assigns.bump + 1)}
+         :ok <- Writing.link(project, doc_a, doc_b) do
+      map = map_data(project, doc_id, kind)
+
+      {:noreply,
+       assign(socket, map_docs: map.docs, map_edges: map.edges, bump: socket.assigns.bump + 1)}
     else
       _ -> {:noreply, socket}
     end
   end
 
   def handle_event("map_remove", %{"id" => id}, socket) do
-    {_, socket} = commit(socket, [%RemoveBlock{block: id}], bump: true)
-    {:noreply, socket}
+    {:noreply, commit(socket, [%RemoveBlock{block: id}], bump: true)}
   end
 
   def handle_event("map_open", %{"doc" => doc_id}, socket) do
@@ -387,7 +363,7 @@ defmodule UitstallingWeb.WritingDocLive do
   def handle_event("undo", _params, socket) do
     %{project: project, doc_id: doc_id, seq: seq} = socket.assigns
 
-    case Writing.undo(project, doc_id, seq, socket.assigns.current_user.id) do
+    case ProjectServer.undo(project.id, doc_id, seq, socket.assigns.current_user.id) do
       {:ok, raw, seq} ->
         broadcast_update(socket)
         {:noreply, refresh(socket, raw, seq)}
@@ -416,7 +392,7 @@ defmodule UitstallingWeb.WritingDocLive do
   def handle_event("save_title", %{"title" => title}, socket) do
     %{project: project, doc_id: doc_id, seq: seq} = socket.assigns
 
-    case Writing.rename_doc(project, doc_id, title, seq, socket.assigns.current_user.id) do
+    case ProjectServer.rename_doc(project.id, doc_id, title, seq, socket.assigns.current_user.id) do
       {:ok, title, seq} ->
         broadcast_update(socket)
         {:noreply, assign(socket, title: title, page_title: title, seq: seq, renaming: false)}
@@ -431,37 +407,50 @@ defmodule UitstallingWeb.WritingDocLive do
 
   # Another session (or a future shared commenter) changed the doc.
   def handle_info(:doc_updated, socket) do
-    {raw, seq, title} =
-      Writing.checkout_doc(socket.assigns.project, socket.assigns.doc_id)
+    %{project: project, doc_id: doc_id, kind: kind} = socket.assigns
+    {raw, seq, title} = ProjectServer.checkout_doc(project.id, doc_id)
+    map = map_data(project, doc_id, kind)
 
     {:noreply,
      socket
-     |> assign(title: title, page_title: title)
-     |> load_map_data()
+     |> assign(title: title, page_title: title, map_docs: map.docs, map_edges: map.edges)
      |> refresh(raw, seq)}
   end
 
   # ----- Commit plumbing --------------------------------------------------------------------
 
+  # Apply an op batch and return the updated socket (pipeable). `:bump`
+  # remounts the block DOM (structural edits); `:focus` is a `raw -> {block,
+  # pos}` resolver run only on success, against the committed document, so
+  # the caret lands where the edit put it.
   defp commit(socket, ops, opts \\ []) do
     %{project: project, doc_id: doc_id, seq: seq} = socket.assigns
 
-    case Writing.apply_ops(project, doc_id, ops, seq, socket.assigns.current_user.id) do
+    case ProjectServer.apply_ops(project.id, doc_id, ops, seq, socket.assigns.current_user.id) do
       {:ok, raw, seq} ->
-        broadcast_update(socket)
-
-        socket =
+        socket
+        |> broadcast_update()
+        |> then(fn socket ->
           if opts[:bump],
             do: refresh(socket, raw, seq),
             else: assign(socket, raw: raw, seq: seq, words: Writing.count_words(raw), menu: nil)
-
-        {:ok, socket}
+        end)
+        |> maybe_focus(opts[:focus], raw)
 
       {:error, :stale} ->
-        {:error, reload_stale(socket)}
+        reload_stale(socket)
 
       {:error, [error | _]} ->
-        {:error, assign(socket, edit_error: "Can't do that: #{error}")}
+        assign(socket, edit_error: "Can't do that: #{error}")
+    end
+  end
+
+  defp maybe_focus(socket, nil, _raw), do: socket
+
+  defp maybe_focus(socket, resolve, raw) do
+    case resolve.(raw) do
+      {block_id, pos} when is_binary(block_id) -> push_focus(socket, block_id, pos)
+      _ -> socket
     end
   end
 
@@ -479,7 +468,8 @@ defmodule UitstallingWeb.WritingDocLive do
   end
 
   defp reload_stale(socket) do
-    {raw, seq, title} = Writing.checkout_doc(socket.assigns.project, socket.assigns.doc_id)
+    {raw, seq, title} =
+      ProjectServer.checkout_doc(socket.assigns.project.id, socket.assigns.doc_id)
 
     socket
     |> assign(title: title, page_title: title)
@@ -489,36 +479,28 @@ defmodule UitstallingWeb.WritingDocLive do
 
   defp broadcast_update(socket) do
     Phoenix.PubSub.broadcast_from(Uitstalling.PubSub, self(), socket.assigns.topic, :doc_updated)
-  end
-
-  defp focus_after(socket, block_id, _pos) do
-    # After a split the caret belongs at the START of the block following
-    # `block_id` — resolve it against the freshly committed raw.
-    blocks = socket.assigns.raw["blocks"]
-
-    case Enum.find_index(blocks, &(&1["id"] == block_id)) do
-      nil -> socket
-      index -> push_focus(socket, Enum.at(blocks, index + 1)["id"], 0)
-    end
+    socket
   end
 
   defp push_focus(socket, block_id, pos),
     do: push_event(socket, "focus_block", %{id: block_id, pos: pos})
 
   defp reload_links(socket) do
-    socket
-    |> assign(linked: Writing.linked_docs(socket.assigns.project, socket.assigns.doc_id))
-    |> then(&assign(&1, tag_options: if(&1.assigns.tag_picker, do: tag_options(&1), else: [])))
+    linked = Writing.linked_docs(socket.assigns.project, socket.assigns.doc_id)
+    options = if socket.assigns.tag_picker, do: tag_options(socket, linked), else: []
+    assign(socket, linked: linked, tag_options: options)
   end
 
   # What the picker offers: elements always; chapters too when this doc is
   # itself an element (so "appears in chapter …" can be added from either
   # side). Never self, never already-linked.
-  defp tag_options(socket) do
+  defp tag_options(socket, linked \\ nil) do
     %{project: project, doc_id: doc_id, kind: kind} = socket.assigns
-    linked_ids = MapSet.new(socket.assigns.linked, & &1.id)
+    linked = linked || socket.assigns.linked
+    linked_ids = MapSet.new(linked, & &1.id)
 
-    Writing.list_docs(project)
+    project.id
+    |> ProjectServer.list_docs()
     |> Enum.filter(fn doc ->
       doc.id != doc_id and not MapSet.member?(linked_ids, doc.id) and
         (doc.kind == "element" or (kind == "element" and doc.kind == "chapter"))
@@ -557,19 +539,20 @@ defmodule UitstallingWeb.WritingDocLive do
 
   # ----- Plan-map plumbing ---------------------------------------------------------------
 
-  # Titles/types for every doc a map dot could reference, plus the project's
-  # link edges. Only plan maps pay for this; other kinds skip it.
-  defp load_map_data(%{assigns: %{kind: "planning"}} = socket) do
+  # Titles/types (keyed by id) for every doc a map dot could reference, plus
+  # the project's link edges. Only plan maps pay for this; other kinds get an
+  # empty map. Docs come from the ProjectServer cache; edges read the links.
+  defp map_data(project, doc_id, "planning") do
     docs =
-      socket.assigns.project
-      |> Writing.list_docs()
-      |> Enum.reject(&(&1.id == socket.assigns.doc_id))
+      project.id
+      |> ProjectServer.list_docs()
+      |> Enum.reject(&(&1.id == doc_id))
       |> Map.new(fn doc -> {doc.id, doc} end)
 
-    assign(socket, map_docs: docs, map_edges: Writing.graph(socket.assigns.project).edges)
+    %{docs: docs, edges: Writing.graph(project).edges}
   end
 
-  defp load_map_data(socket), do: assign(socket, map_docs: %{}, map_edges: [])
+  defp map_data(_project, _doc_id, _kind), do: %{docs: %{}, edges: []}
 
   defp placed_doc_ids(raw) do
     for %{"type" => "node", "doc" => doc} <- raw["blocks"], do: doc
@@ -611,7 +594,7 @@ defmodule UitstallingWeb.WritingDocLive do
 
   # What the canvas hook draws: placed dots (with titles/colors resolved)
   # and the link edges between docs that are both on this map.
-  defp canvas_payload(raw, map_docs, map_edges, theme) do
+  defp canvas_payload(raw, map_docs, map_edges, theme, registry) do
     nodes =
       for %{"type" => "node", "id" => id, "doc" => doc_id, "x" => x, "y" => y} <- raw["blocks"],
           doc = map_docs[doc_id] do
@@ -622,7 +605,7 @@ defmodule UitstallingWeb.WritingDocLive do
           doc: doc_id,
           title: doc.title,
           type: type,
-          color: WritingComponents.element_hex(type),
+          color: WritingComponents.element_hex(registry, type),
           x: x,
           y: y
         }
@@ -659,11 +642,16 @@ defmodule UitstallingWeb.WritingDocLive do
       phx-hook=".WritingDocNav"
       class={["min-h-dvh", @font, @palette.bg, @palette.ink]}
     >
-      <header class={[
-        "fixed top-0 inset-x-0 z-40 border-b backdrop-blur",
-        @palette.bg,
-        @palette.rule
-      ]}>
+      <.loading :if={not @loaded} palette={@palette} label="opening…" />
+
+      <header
+        :if={@loaded}
+        class={[
+          "fixed top-0 inset-x-0 z-40 border-b backdrop-blur",
+          @palette.bg,
+          @palette.rule
+        ]}
+      >
         <div class="max-w-2xl mx-auto px-6 py-3 flex items-center gap-4">
           <.link
             navigate={~p"/write/#{@project.id}"}
@@ -684,7 +672,7 @@ defmodule UitstallingWeb.WritingDocLive do
                 :if={@element_type}
                 class={[
                   "ml-2 rounded-full ring-1 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider",
-                  WritingComponents.element_chip(@element_type, @palette.light)
+                  WritingComponents.element_chip(@registry, @element_type, @palette.light)
                 ]}
               >
                 {@element_type}
@@ -728,13 +716,13 @@ defmodule UitstallingWeb.WritingDocLive do
         </div>
       </header>
 
-      <div class="max-w-2xl mx-auto px-6 pt-28 pb-40">
+      <div :if={@loaded} class="max-w-2xl mx-auto px-6 pt-28 pb-40">
         <div class="mb-10 flex items-center gap-2 flex-wrap">
           <span
             :for={doc <- @linked}
             class={[
               "group/tag inline-flex items-center gap-1.5 rounded-full ring-1 px-3 py-1 text-xs font-semibold",
-              WritingComponents.element_chip(doc.element_type || doc.kind, @palette.light)
+              WritingComponents.element_chip(@registry, doc.element_type || doc.kind, @palette.light)
             ]}
           >
             <.link navigate={~p"/write/#{@project.id}/#{doc.id}"} class="hover:underline">
@@ -782,7 +770,7 @@ defmodule UitstallingWeb.WritingDocLive do
               >
                 <span
                   class="inline-block w-2 h-2 rounded-full shrink-0"
-                  style={"background: #{WritingComponents.element_hex(doc.element_type || doc.kind)}"}
+                  style={"background: #{WritingComponents.element_hex(@registry, doc.element_type || doc.kind)}"}
                 ></span>
                 {doc.title}
                 <span class={["ml-auto font-mono text-[10px] uppercase", @palette.faint]}>
@@ -790,31 +778,16 @@ defmodule UitstallingWeb.WritingDocLive do
                 </span>
               </button>
 
-              <form
-                phx-submit="create_and_tag"
-                class={["flex gap-1.5 p-2 mt-1 border-t", @palette.rule]}
+              <p
+                :if={@tag_options == []}
+                class={["px-3 py-2 text-xs leading-relaxed", @palette.faint]}
               >
-                <.type_dropdown
-                  picked={@tag_type}
-                  open={@tag_type_menu}
-                  toggle="toggle_tag_type_menu"
-                  pick="pick_tag_type"
-                  palette={@palette}
-                />
-                <input
-                  type="text"
-                  name="name"
-                  required
-                  placeholder="New element…"
-                  autocomplete="off"
-                  class={[
-                    "flex-1 min-w-0 rounded border bg-transparent px-2 py-1 text-sm",
-                    @palette.rule,
-                    "placeholder:opacity-50 focus:outline-none"
-                  ]}
-                />
-                <button type="submit" class={["font-mono text-xs px-1", @palette.accent]}>+</button>
-              </form>
+                Nothing to tag yet. Add characters, places and the rest on a <.link
+                  navigate={~p"/write/#{@project.id}"}
+                  class="underline"
+                >plan map</.link>,
+                then tag them here.
+              </p>
             </div>
           </div>
         </div>
@@ -824,7 +797,7 @@ defmodule UitstallingWeb.WritingDocLive do
             id={"plan-map-#{@bump}"}
             phx-hook=".PlanMap"
             phx-update="ignore"
-            data-canvas={canvas_payload(@raw, @map_docs, @map_edges, @project.theme)}
+            data-canvas={canvas_payload(@raw, @map_docs, @map_edges, @project.theme, @registry)}
             class={[
               "h-[28rem] rounded-xl border overflow-hidden touch-none select-none",
               @palette.rule,
@@ -843,7 +816,7 @@ defmodule UitstallingWeb.WritingDocLive do
               phx-value-doc={id}
               class={[
                 "inline-flex items-center gap-1.5 rounded-full ring-1 px-3 py-1 text-xs font-semibold",
-                WritingComponents.element_chip(doc.element_type, @palette.light),
+                WritingComponents.element_chip(@registry, doc.element_type, @palette.light),
                 @palette.hover
               ]}
             >
@@ -852,6 +825,7 @@ defmodule UitstallingWeb.WritingDocLive do
 
             <form phx-submit="map_create" class="flex items-center gap-1.5">
               <.type_dropdown
+                types={@active_types}
                 picked={@tag_type}
                 open={@tag_type_menu}
                 toggle="toggle_tag_type_menu"
@@ -882,7 +856,11 @@ defmodule UitstallingWeb.WritingDocLive do
               :for={{block_id, doc} <- @placed}
               class={[
                 "group/dot inline-flex items-center gap-1.5 rounded-full ring-1 px-2.5 py-0.5 text-xs",
-                WritingComponents.element_chip(doc.element_type || doc.kind, @palette.light)
+                WritingComponents.element_chip(
+                  @registry,
+                  doc.element_type || doc.kind,
+                  @palette.light
+                )
               ]}
             >
               {doc.title}
@@ -1009,26 +987,11 @@ defmodule UitstallingWeb.WritingDocLive do
               this.timer = setTimeout(() => this.flush(), 1200)
             })
             this.el.addEventListener("blur", () => this.flush())
+            // Enter is a plain newline (native) — a block holds many
+            // paragraphs, so drafting never touches the server per Return.
+            // Escape just commits and drops focus.
             this.el.addEventListener("keydown", (e) => {
-              const plain = !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
-              const caretAtStart = this.el.selectionStart === 0 && this.el.selectionEnd === 0
-              if (e.key === "Enter" && plain && this.el.dataset.splittable === "true") {
-                e.preventDefault()
-                clearTimeout(this.timer)
-                this.dirty = false
-                this.pushEvent("split_block", {
-                  id: this.el.dataset.blockId,
-                  text: this.el.value,
-                  at: this.el.selectionStart,
-                })
-              } else if (e.key === "Backspace" && caretAtStart && this.el.dataset.mergeable === "true") {
-                e.preventDefault()
-                clearTimeout(this.timer)
-                this.dirty = false
-                this.pushEvent("merge_block", {id: this.el.dataset.blockId, text: this.el.value})
-              } else if (e.key === "Escape") {
-                this.el.blur()
-              }
+              if (e.key === "Escape") this.el.blur()
             })
           },
           updated() { this.resize() },
@@ -1193,6 +1156,22 @@ defmodule UitstallingWeb.WritingDocLive do
                 if (el.setSelectionRange) el.setSelectionRange(pos, pos)
               })
             })
+
+            // Cmd/Ctrl+Z = event-log undo. While the caret is IN a block
+            // (a text field), the browser's native undo of the just-typed
+            // text should win — those keystrokes haven't been committed as
+            // ops yet — so only intercept when focus is on the page chrome.
+            this.onKey = (e) => {
+              if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return
+              const t = document.activeElement
+              if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return
+              e.preventDefault()
+              this.pushEvent("undo")
+            }
+            window.addEventListener("keydown", this.onKey)
+          },
+          destroyed() {
+            window.removeEventListener("keydown", this.onKey)
           },
         }
       </script>
@@ -1351,8 +1330,6 @@ defmodule UitstallingWeb.WritingDocLive do
       phx-update="ignore"
       data-block-id={@block["id"]}
       data-field="text"
-      data-splittable="true"
-      data-mergeable={to_string(@index > 0)}
       rows="1"
       placeholder="Heading…"
       spellcheck="true"
@@ -1370,7 +1347,6 @@ defmodule UitstallingWeb.WritingDocLive do
         phx-update="ignore"
         data-block-id={@block["id"]}
         data-field="text"
-        data-mergeable={to_string(@index > 0)}
         rows="1"
         placeholder="An epigraph…"
         spellcheck="true"
@@ -1469,8 +1445,6 @@ defmodule UitstallingWeb.WritingDocLive do
       phx-update="ignore"
       data-block-id={@block["id"]}
       data-field="text"
-      data-splittable="true"
-      data-mergeable={to_string(@index > 0)}
       rows="1"
       placeholder={if @index == 0, do: "Begin…", else: ""}
       spellcheck="true"
