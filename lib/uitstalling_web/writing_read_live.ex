@@ -52,6 +52,7 @@ defmodule UitstallingWeb.WritingReadLive do
            element_type: nil,
            sections: [],
            links: %{},
+           mentions: [],
            registry: Writing.element_type_registry(user)
          )
          |> start_async(:load, fn -> load(project, doc_id) end)}
@@ -92,8 +93,30 @@ defmodule UitstallingWeb.WritingReadLive do
           end
       end
 
+    # "Mentioned in": which other docs' prose wiki-links point at this page.
+    # Only for a single doc — the whole-manuscript view is a reading flow.
+    mentions =
+      if doc_id do
+        sources =
+          for d <- docs, d.id != doc_id do
+            {raw, _seq, title} = ProjectServer.checkout_doc(project.id, d.id)
+
+            %{
+              id: d.id,
+              title: title,
+              kind: d.kind,
+              element_type: d.element_type,
+              blocks: raw["blocks"]
+            }
+          end
+
+        Writing.scan_mentions(hd(sections).title, sources)
+      else
+        []
+      end
+
     title = if doc_id, do: hd(sections).title, else: ProjectServer.title(project.id)
-    %{title: title, sections: sections, links: links}
+    %{title: title, sections: sections, links: links, mentions: mentions}
   end
 
   def handle_async(:load, {:ok, data}, socket) do
@@ -103,7 +126,8 @@ defmodule UitstallingWeb.WritingReadLive do
        page_title: data.title,
        title: data.title,
        sections: data.sections,
-       links: data.links
+       links: data.links,
+       mentions: data.mentions
      )}
   end
 
@@ -117,14 +141,24 @@ defmodule UitstallingWeb.WritingReadLive do
      |> redirect(to: ~p"/write/#{socket.assigns.project.id}")}
   end
 
+  # The user's bullet_style setting as a CSS list-style-type value; strings
+  # (dash) are custom markers, keywords (disc/circle/square) are built in.
+  defp bullet_css("dash"), do: ~s("–  ")
+  defp bullet_css(style) when style in ~w(disc circle square), do: style
+  defp bullet_css(_), do: "disc"
+
   def render(assigns) do
     assigns =
       assigns
       |> assign(:palette, WritingComponents.page_theme(assigns.project.theme))
       |> assign(:font, WritingComponents.font_class(assigns.project.font))
+      |> assign(:bullet, bullet_css(Accounts.settings(assigns.current_user).bullet_style))
 
     ~H"""
-    <main class={["min-h-dvh", @font, @palette.bg, @palette.ink]}>
+    <main
+      class={["min-h-dvh", @font, @palette.bg, @palette.ink]}
+      style={"--bullet: #{@bullet}"}
+    >
       <header class={["border-b", @palette.rule]}>
         <div class="max-w-2xl mx-auto px-6 py-3 flex items-center gap-4">
           <.link
@@ -185,9 +219,49 @@ defmodule UitstallingWeb.WritingReadLive do
             links={@links}
           />
         </section>
+
+        <section
+          :if={@mode == :doc and @mentions != []}
+          class={["mt-16 pt-8 border-t", @palette.rule]}
+        >
+          <p class={["font-mono text-[10px] uppercase tracking-wider mb-6", @palette.faint]}>
+            mentioned in
+          </p>
+          <ul class="space-y-6">
+            <li :for={m <- @mentions}>
+              <.link
+                navigate={~p"/write/#{@project.id}/#{m.id}/read"}
+                class="inline-flex items-center gap-2 font-semibold hover:underline decoration-1 underline-offset-4"
+              >
+                {m.title}
+                <span class={[
+                  "font-mono text-[10px] uppercase tracking-wider not-italic",
+                  @palette.faint
+                ]}>
+                  {mention_kind(@registry, m)}
+                </span>
+              </.link>
+              <ul class={["mt-2 space-y-1.5 border-l-2 pl-4", @palette.rule]}>
+                <li :for={snippet <- m.snippets} class={["text-sm leading-relaxed", @palette.muted]}>
+                  “{snippet}”
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </section>
       </article>
     </main>
     """
+  end
+
+  # A mention's kind label: "chapter", or the tag's element-type label.
+  defp mention_kind(_registry, %{kind: "chapter"}), do: "chapter"
+
+  defp mention_kind(registry, %{element_type: type}) do
+    case registry[type] do
+      %{label: label} -> label
+      _ -> type
+    end
   end
 
   attr :block, :map, required: true

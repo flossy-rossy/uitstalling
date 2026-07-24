@@ -201,7 +201,8 @@
 .reading h2 { font-size: 1.35em; }
 .reading h3 { font-size: 1.15em; }
 .reading ul, .reading ol { margin: 0 0 1em; padding-left: 1.5em; }
-.reading ul { list-style: disc; }
+/* --bullet comes from the user's bullet_style setting (read view sets it). */
+.reading ul { list-style: var(--bullet, disc); }
 .reading ol { list-style: decimal; }
 .reading li { margin: 0.25em 0; line-height: 1.7; }
 .reading blockquote { margin: 0 0 1em; padding-left: 1em; border-left: 3px solid currentColor; opacity: 0.75; font-style: italic; }

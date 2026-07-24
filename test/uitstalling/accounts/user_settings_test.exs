@@ -14,6 +14,17 @@ defmodule Uitstalling.Accounts.UserSettingsTest do
     assert settings.custom_element_types == []
   end
 
+  test "bullet style defaults to disc, saves valid values, rejects others" do
+    user = user_fixture()
+    assert Accounts.settings(user).bullet_style == "disc"
+
+    {:ok, user} = Accounts.update_settings(user, %{"bullet_style" => "dash"})
+    assert Accounts.settings(user).bullet_style == "dash"
+
+    assert {:error, changeset} = Accounts.update_settings(user, %{"bullet_style" => "wingding"})
+    assert "is invalid" in errors_on(changeset).settings.bullet_style
+  end
+
   test "enabled is filtered to real curated keys" do
     user = user_fixture()
 

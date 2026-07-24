@@ -78,6 +78,7 @@ defmodule UitstallingWeb.WritingDocLive do
            nav: %{prev: nil, next: nil},
            active_block: nil,
            special_open: false,
+           link_panel: nil,
            active_types: Writing.active_element_types(user),
            registry: Writing.element_type_registry(user),
            tag_picker: false,
@@ -217,6 +218,49 @@ defmodule UitstallingWeb.WritingDocLive do
 
   def handle_event("close_special", _params, socket) do
     {:noreply, assign(socket, special_open: false)}
+  end
+
+  # The link panel: opened from the format bar, ⌘K, or the selection popover
+  # (the client stashes which selection to wrap). Picking a target round-trips
+  # as "apply_link" and the client inserts the [[target|display]] wikilink.
+  def handle_event("open_link_panel", %{"text" => text}, socket) do
+    {:noreply, assign(socket, link_panel: link_panel_state(socket, String.trim(text)))}
+  end
+
+  def handle_event("link_search", %{"q" => q}, socket) do
+    {:noreply, assign(socket, link_panel: link_panel_state(socket, q))}
+  end
+
+  def handle_event("link_submit", _params, socket) do
+    case socket.assigns.link_panel do
+      %{results: [first | _]} ->
+        {:noreply,
+         socket |> assign(link_panel: nil) |> push_event("apply_link", %{target: first.label})}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("pick_link", %{"target" => target}, socket) do
+    {:noreply, socket |> assign(link_panel: nil) |> push_event("apply_link", %{target: target})}
+  end
+
+  # Create a tag (element) named by the query and link to it in one step, so a
+  # name that doesn't exist yet still yields a live link, not a dead one.
+  def handle_event("create_and_link", %{"type" => type, "name" => name}, socket) do
+    name = String.trim(name)
+
+    with true <- type in Enum.map(socket.assigns.active_types, & &1.key),
+         {:ok, _id} <- ProjectServer.create_element(socket.assigns.project.id, type, name) do
+      {:noreply, socket |> assign(link_panel: nil) |> push_event("apply_link", %{target: name})}
+    else
+      _ -> {:noreply, assign(socket, link_panel: link_panel_state(socket, name))}
+    end
+  end
+
+  def handle_event("close_link_panel", _params, socket) do
+    {:noreply, assign(socket, link_panel: nil)}
   end
 
   # ----- Tags (plan links) ---------------------------------------------------------
@@ -536,6 +580,46 @@ defmodule UitstallingWeb.WritingDocLive do
       doc.id != doc_id and not MapSet.member?(linked_ids, doc.id) and
         (doc.kind == "element" or (kind == "element" and doc.kind == "chapter"))
     end)
+  end
+
+  # State for the link panel. Targets are the project's real pages — chapters
+  # and tags (elements) — so every link resolves in read view; there are no
+  # dead links. When the query names nothing yet, `can_create` lets the panel
+  # offer "create it as a tag" inline. This is the single place that decides
+  # what text can link TO; to grow linking (contacts, sharing) add target
+  # kinds here and teach resolve_wikilinks (writing_components.ex) their shape.
+  defp link_panel_state(socket, query) do
+    results = link_targets(socket, query)
+    trimmed = String.trim(query)
+
+    can_create =
+      trimmed != "" and
+        not Enum.any?(results, &(String.downcase(&1.label) == String.downcase(trimmed)))
+
+    %{query: query, results: results, can_create: can_create}
+  end
+
+  defp link_targets(socket, query) do
+    q = query |> String.trim() |> String.downcase()
+
+    socket.assigns.project.id
+    |> ProjectServer.list_docs()
+    |> Enum.filter(fn doc ->
+      doc.id != socket.assigns.doc_id and doc.kind in ~w(chapter element) and
+        (q == "" or String.contains?(String.downcase(doc.title), q))
+    end)
+    |> Enum.take(8)
+    |> Enum.map(&%{label: &1.title, kind: link_kind_label(socket, &1)})
+  end
+
+  # A target's human kind label: "chapter", or the tag's element-type label.
+  defp link_kind_label(_socket, %{kind: "chapter"}), do: "chapter"
+
+  defp link_kind_label(socket, %{element_type: type}) do
+    case socket.assigns.registry[type] do
+      %{label: label} -> label
+      _ -> type
+    end
   end
 
   defp find_block(raw, id), do: Enum.find(raw["blocks"], &(&1["id"] == id))
@@ -1033,6 +1117,60 @@ defmodule UitstallingWeb.WritingDocLive do
           />
         </div>
 
+        <div class={["mt-4 flex flex-wrap items-center gap-1", @palette.muted]}>
+          <button
+            type="button"
+            data-wrap="**"
+            title="Bold — ⌘B"
+            class={["px-2 h-7 rounded font-bold", @palette.hover]}
+          >
+            B
+          </button>
+          <button
+            type="button"
+            data-wrap="*"
+            title="Italic — ⌘I"
+            class={["px-2 h-7 rounded italic", @palette.hover]}
+          >
+            I
+          </button>
+          <button
+            type="button"
+            data-wrap="~~"
+            title="Strikethrough — ⌘⇧X"
+            class={["px-2 h-7 rounded line-through", @palette.hover]}
+          >
+            S
+          </button>
+          <button
+            type="button"
+            data-prefix="- "
+            title="Bulleted list"
+            class={["px-2 h-7 rounded", @palette.hover]}
+          >
+            • list
+          </button>
+          <button
+            type="button"
+            data-prefix="## "
+            title="Heading"
+            class={["px-2 h-7 rounded font-bold", @palette.hover]}
+          >
+            H
+          </button>
+          <button
+            type="button"
+            data-link
+            title="Link to a page — ⌘K"
+            class={["px-2 h-7 rounded inline-flex items-center", @palette.hover]}
+          >
+            <.icon name="hero-link" class="size-4" />
+          </button>
+          <span class={["ml-auto font-mono text-[10px] uppercase tracking-wider", @palette.faint]}>
+            ⌘Z undo · ⌘⇧Z redo
+          </span>
+        </div>
+
         <div class={["mt-12 pt-6 border-t flex gap-2 flex-wrap", @palette.rule]}>
           <button
             :for={type <- palette(@kind, @element_type)}
@@ -1064,19 +1202,19 @@ defmodule UitstallingWeb.WritingDocLive do
               @palette.hover
             ]}
           >
-            Ω symbols &amp; formatting
+            Ω symbols
           </button>
 
           <div
             :if={@special_open}
             class={[
-              "absolute bottom-full mb-2 left-0 z-30 w-72 rounded-lg border shadow-lg p-3 text-left",
+              "fixed bottom-6 left-6 z-40 w-72 max-w-[calc(100vw-3rem)] max-h-[60vh] overflow-auto rounded-lg border shadow-lg p-3 text-left",
               @palette.bg,
               @palette.rule
             ]}
           >
             <p class={["font-mono text-[10px] uppercase tracking-wider mb-2", @palette.faint]}>
-              insert — click into your text first
+              insert at the caret
             </p>
             <div class="flex flex-wrap gap-1">
               <button
@@ -1091,43 +1229,96 @@ defmodule UitstallingWeb.WritingDocLive do
                 {ch}
               </button>
             </div>
-            <p class={["font-mono text-[10px] uppercase tracking-wider mt-3 mb-1", @palette.faint]}>
-              formatting — select text, then
+          </div>
+        </div>
+
+        <button
+          id="selection-link"
+          type="button"
+          data-link
+          phx-update="ignore"
+          hidden
+          class={[
+            "fixed z-40 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border shadow-lg font-mono text-xs",
+            @palette.bg,
+            @palette.rule,
+            @palette.hover
+          ]}
+        >
+          <.icon name="hero-link" class="size-3.5" /> link
+        </button>
+
+        <div :if={@link_panel} class="fixed bottom-6 inset-x-0 z-50 flex justify-center px-6">
+          <div
+            class={["w-96 max-w-full rounded-lg border shadow-lg p-3", @palette.bg, @palette.rule]}
+            phx-click-away="close_link_panel"
+            phx-window-keydown="close_link_panel"
+            phx-key="escape"
+          >
+            <p class={["font-mono text-[10px] uppercase tracking-wider mb-2", @palette.faint]}>
+              link to a chapter or tag
             </p>
-            <div class="flex flex-wrap gap-1">
+            <form phx-change="link_search" phx-submit="link_submit">
+              <input
+                type="text"
+                name="q"
+                value={@link_panel.query}
+                placeholder="Search chapters and tags…"
+                autocomplete="off"
+                phx-mounted={JS.focus()}
+                class={[
+                  "w-full rounded-lg px-3 py-2 bg-transparent border text-sm",
+                  @palette.rule,
+                  "placeholder:opacity-50 focus:outline-none"
+                ]}
+              />
+            </form>
+            <div :if={@link_panel.results != []} class="mt-2 flex flex-col">
               <button
-                type="button"
-                data-wrap="**"
-                class={["px-2 h-7 rounded font-bold", @palette.hover]}
+                :for={target <- @link_panel.results}
+                phx-click="pick_link"
+                phx-value-target={target.label}
+                class={[
+                  "flex items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-sm",
+                  @palette.hover
+                ]}
               >
-                B
-              </button>
-              <button type="button" data-wrap="*" class={["px-2 h-7 rounded italic", @palette.hover]}>
-                I
-              </button>
-              <button
-                type="button"
-                data-wrap="~~"
-                class={["px-2 h-7 rounded line-through", @palette.hover]}
-              >
-                S
-              </button>
-              <button type="button" data-prefix="- " class={["px-2 h-7 rounded", @palette.hover]}>
-                • list
-              </button>
-              <button
-                type="button"
-                data-prefix="## "
-                class={["px-2 h-7 rounded font-bold", @palette.hover]}
-              >
-                H
-              </button>
-              <button type="button" data-linkify class={["px-2 h-7 rounded", @palette.hover]}>
-                [[ link ]]
+                <span class="truncate">{target.label}</span>
+                <span class={["font-mono text-[10px] uppercase shrink-0", @palette.faint]}>
+                  {target.kind}
+                </span>
               </button>
             </div>
-            <p class={["text-xs mt-2", @palette.muted]}>
-              <code>[[Name]]</code> links to that page in read view · ⌘Z undo · ⌘⇧Z redo
+
+            <div :if={@link_panel.can_create} class={["mt-3 pt-3 border-t", @palette.rule]}>
+              <p class={["text-xs mb-2", @palette.muted]}>
+                No page called “{@link_panel.query}”. Create it as a tag:
+              </p>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  :for={type <- @active_types}
+                  phx-click="create_and_link"
+                  phx-value-type={type.key}
+                  phx-value-name={@link_panel.query}
+                  class={[
+                    "inline-flex items-center gap-1.5 rounded-full ring-1 px-3 py-1 text-xs font-semibold transition",
+                    WritingComponents.chip_class(type.color, @palette.light),
+                    "opacity-70 hover:opacity-100"
+                  ]}
+                >
+                  + {type.label}
+                </button>
+              </div>
+            </div>
+
+            <p
+              :if={@link_panel.results == [] and not @link_panel.can_create}
+              class={["text-xs mt-2", @palette.muted]}
+            >
+              Type a name to find a chapter or tag, or create a new tag.
+            </p>
+            <p class={["text-xs mt-3", @palette.faint]}>
+              Links open the page in read view.
             </p>
           </div>
         </div>
@@ -1192,11 +1383,35 @@ defmodule UitstallingWeb.WritingDocLive do
               this.pushEvent("block_focused", {id: this.el.dataset.blockId})
             )
             // Enter is a plain newline (native) — a block holds many
-            // paragraphs, so drafting never touches the server per Return.
+            // paragraphs, so drafting never touches the server per Return —
+            // except inside a list, where it continues the marker (and Enter
+            // on an empty item clears it, exiting the list).
             // Escape just commits and drops focus.
             this.el.addEventListener("keydown", (e) => {
               if (e.key === "Escape") this.el.blur()
+              if (e.key === "Enter" && !e.shiftKey && !e.isComposing &&
+                  this.el.tagName === "TEXTAREA") this.continueList(e)
             })
+          },
+          continueList(e) {
+            const t = this.el
+            if (t.selectionStart !== t.selectionEnd) return
+            const s = t.selectionStart
+            const lineStart = t.value.lastIndexOf("\n", s - 1) + 1
+            const line = t.value.slice(lineStart, s)
+            const m = line.match(/^(\s*)([-*+]|\d+[.)])\s+/)
+            if (!m) return
+            e.preventDefault()
+            if (line.length === m[0].length) {
+              // Empty item: Enter exits the list instead of adding another.
+              t.setRangeText("", lineStart, s, "end")
+            } else {
+              const marker = /^\d/.test(m[2])
+                ? (parseInt(m[2], 10) + 1) + m[2].slice(-1)
+                : m[2]
+              t.setRangeText("\n" + m[1] + marker + " ", s, s, "end")
+            }
+            t.dispatchEvent(new Event("input", {bubbles: true}))
           },
           updated() { this.resize() },
           destroyed() { clearTimeout(this.timer) },
@@ -1228,16 +1443,54 @@ defmodule UitstallingWeb.WritingDocLive do
             const svg = document.createElementNS(NS, "svg")
             svg.setAttribute("width", "100%")
             svg.setAttribute("height", "100%")
-            // Fit the stored layout, never smaller than the default page.
-            const pad = 60
-            const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y)
-            const minX = Math.min(0, ...xs.map((x) => x - pad))
-            const minY = Math.min(0, ...ys.map((y) => y - pad))
-            const maxX = Math.max(1000, ...xs.map((x) => x + pad))
-            const maxY = Math.max(560, ...ys.map((y) => y + pad))
-            svg.setAttribute("viewBox", `${minX} ${minY} ${maxX - minX} ${maxY - minY}`)
             this.el.style.position = "relative"
             this.el.appendChild(svg)
+
+            // Zoom: the viewBox is fit to the node cloud (never smaller than
+            // the default page), then scaled by this.zoom around the content
+            // centre. The wheel and the +/−/⤢ buttons drive it; dragging reads
+            // getScreenCTM so node moves stay correct at any zoom.
+            const pad = 60
+            this.zoom = 1
+            const clampZoom = (z) => Math.min(4, Math.max(0.3, z))
+            const fitView = () => {
+              const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y)
+              const minX = Math.min(0, ...xs.map((x) => x - pad))
+              const minY = Math.min(0, ...ys.map((y) => y - pad))
+              const maxX = Math.max(1000, ...xs.map((x) => x + pad))
+              const maxY = Math.max(560, ...ys.map((y) => y + pad))
+              const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
+              const w = (maxX - minX) / this.zoom, h = (maxY - minY) / this.zoom
+              svg.setAttribute("viewBox", `${cx - w / 2} ${cy - h / 2} ${w} ${h}`)
+            }
+            fitView()
+
+            this.el.addEventListener(
+              "wheel",
+              (e) => {
+                e.preventDefault()
+                this.zoom = clampZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 0.9))
+                fitView()
+              },
+              {passive: false}
+            )
+
+            const controls = document.createElement("div")
+            controls.style.cssText =
+              "position:absolute;bottom:12px;right:12px;display:flex;gap:6px;z-index:1"
+            ;[["−", () => (this.zoom = clampZoom(this.zoom * 0.8))],
+              ["⤢", () => (this.zoom = 1)],
+              ["+", () => (this.zoom = clampZoom(this.zoom * 1.25))]].forEach(([txt, fn]) => {
+              const b = document.createElement("button")
+              b.type = "button"
+              b.textContent = txt
+              b.style.cssText =
+                `width:28px;height:28px;border-radius:6px;font:14px ui-monospace,monospace;` +
+                `border:1px solid ${edgeColor};color:${ink};background:transparent;cursor:pointer`
+              b.addEventListener("click", () => { fn(); fitView() })
+              controls.appendChild(b)
+            })
+            this.el.appendChild(controls)
 
             edges.forEach((e) => {
               const a = byDoc.get(e.a), b = byDoc.get(e.b)
@@ -1348,59 +1601,177 @@ defmodule UitstallingWeb.WritingDocLive do
       </script>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".SpecialChars">
+        const CONTROLS = "[data-char],[data-wrap],[data-prefix],[data-link]"
+
         export default {
           mounted() {
-            // Remember the writing field the caret was last in — clicking the
-            // Ω button and a character both steal focus, so we insert back
-            // into this remembered target at its preserved caret.
+            // Remember the writing field the caret was last in — clicking a
+            // format/symbol control steals focus, so we insert back into
+            // this remembered target at its preserved caret. Controls live
+            // both in the format bar and the Ω popup, so listen on document.
             this.target = null
-            document.addEventListener("focusin", (e) => {
+            this.onFocusin = (e) => {
               const el = e.target
               if (el && el.dataset && el.dataset.blockId &&
                   (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
                 this.target = el
               }
-            })
+            }
+            document.addEventListener("focusin", this.onFocusin)
 
-            this.el.addEventListener("mousedown", (e) => {
+            this.onMousedown = (e) => {
               // Keep the textarea's focus/selection while clicking a control.
-              const d = e.target.dataset || {}
-              if (d.char || d.wrap || d.prefix || d.linkify !== undefined) e.preventDefault()
-            })
+              if (e.target.closest && e.target.closest(CONTROLS)) e.preventDefault()
+            }
+            document.addEventListener("mousedown", this.onMousedown)
 
-            const changed = (t) => {
+            this.onClick = (e) => {
+              const btn = e.target.closest && e.target.closest(CONTROLS)
+              if (!btn) return
+              if (btn.dataset.link !== undefined) this.openLinkPanel()
+              else this.apply(btn.dataset)
+            }
+            document.addEventListener("click", this.onClick)
+
+            // Formatting shortcuts while typing: ⌘B, ⌘I, ⌘⇧X, ⌘K link.
+            this.onKey = (e) => {
+              if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+              const a = document.activeElement
+              // Don't hijack shortcuts aimed at some other input on the page.
+              if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") &&
+                  !(a.dataset && a.dataset.blockId)) return
+              const k = e.key.toLowerCase()
+              if (k === "k" && !e.shiftKey) {
+                e.preventDefault()
+                return this.openLinkPanel()
+              }
+              let d = null
+              if (k === "b" && !e.shiftKey) d = {wrap: "**"}
+              else if (k === "i" && !e.shiftKey) d = {wrap: "*"}
+              else if (k === "x" && e.shiftKey) d = {wrap: "~~"}
+              if (!d) return
+              e.preventDefault()
+              this.apply(d)
+            }
+            window.addEventListener("keydown", this.onKey)
+
+            // A small floating "link" popover over the mouse whenever text is
+            // selected in a writing field — the discoverable path to linking.
+            this.linkBtn = document.getElementById("selection-link")
+            this.onMouseup = (e) => {
+              if (this.linkBtn && this.linkBtn.contains(e.target)) return
+              this.placeLinkBtn(e)
+            }
+            this.onKeyup = () => this.placeLinkBtn(null)
+            this.onScroll = () => { if (this.linkBtn) this.linkBtn.hidden = true }
+            document.addEventListener("mouseup", this.onMouseup)
+            document.addEventListener("keyup", this.onKeyup)
+            window.addEventListener("scroll", this.onScroll, {passive: true})
+
+            // The panel's pick round-trips back here; wrap the stashed
+            // selection as [[target]] / [[target|display text]].
+            this.handleEvent("apply_link", ({target}) => {
+              const p = this.pending
+              this.pending = null
+              const t = p &&
+                document.querySelector(
+                  `textarea[data-block-id="${p.blockId}"][data-field="${p.field}"],` +
+                  `input[data-block-id="${p.blockId}"][data-field="${p.field}"]`
+                )
+              if (!t || !target) return
+              const s = Math.min(p.s, t.value.length)
+              const end = Math.min(p.end, t.value.length)
+              const sel = t.value.slice(s, end)
+              const text = !sel || sel.toLowerCase() === target.toLowerCase()
+                ? `[[${target}]]`
+                : `[[${target}|${sel}]]`
+              t.setRangeText(text, s, end, "end")
               t.focus()
-              // Nudge the block hook to debounce-save + resize.
               t.dispatchEvent(new Event("input", {bubbles: true}))
+            })
+          },
+          destroyed() {
+            document.removeEventListener("focusin", this.onFocusin)
+            document.removeEventListener("mousedown", this.onMousedown)
+            document.removeEventListener("click", this.onClick)
+            window.removeEventListener("keydown", this.onKey)
+            document.removeEventListener("mouseup", this.onMouseup)
+            document.removeEventListener("keyup", this.onKeyup)
+            window.removeEventListener("scroll", this.onScroll)
+          },
+          // Stash which selection to wrap (by block id — the element may
+          // remount while the panel is open), then let the server open it.
+          openLinkPanel() {
+            const t = this.field()
+            if (!t) return
+            const s = t.selectionStart ?? t.value.length
+            const end = t.selectionEnd ?? s
+            this.pending = {blockId: t.dataset.blockId, field: t.dataset.field, s, end}
+            if (this.linkBtn) this.linkBtn.hidden = true
+            this.pushEvent("open_link_panel", {text: t.value.slice(s, end)})
+          },
+          placeLinkBtn(e) {
+            const b = this.linkBtn
+            if (!b) return
+            requestAnimationFrame(() => {
+              const t = document.activeElement
+              const ok = t && t.dataset && t.dataset.blockId &&
+                (t.tagName === "TEXTAREA" || t.tagName === "INPUT") &&
+                t.selectionStart !== t.selectionEnd
+              if (!ok) { b.hidden = true; return }
+              b.hidden = false
+              const at = e
+                ? {x: e.clientX, y: e.clientY}
+                : {x: t.getBoundingClientRect().left + 40, y: t.getBoundingClientRect().top + 20}
+              b.style.left =
+                Math.min(Math.max(8, at.x - b.offsetWidth / 2), window.innerWidth - b.offsetWidth - 8) + "px"
+              b.style.top = Math.max(8, at.y - b.offsetHeight - 12) + "px"
+            })
+          },
+          // The remembered field, re-resolved by block id when the element
+          // was remounted since focus (ids embed @bump, so undo/redo and
+          // remote writes detach it); else the first field in the doc.
+          field() {
+            let t = this.target
+            if (t && !t.isConnected) {
+              t = document.querySelector(
+                `textarea[data-block-id="${t.dataset.blockId}"][data-field="${t.dataset.field}"],` +
+                `input[data-block-id="${t.dataset.blockId}"][data-field="${t.dataset.field}"]`
+              )
+              this.target = t
+            }
+            return t || document.querySelector("textarea[data-block-id], input[data-block-id]")
+          },
+          apply(d) {
+            const t = this.field()
+            if (!t) return
+            const s = t.selectionStart ?? t.value.length
+            const end = t.selectionEnd ?? s
+            const put = (text, mode) => {
+              if (t.setRangeText) {
+                t.setRangeText(text, s, end, mode)
+              } else {
+                t.value = t.value.slice(0, s) + text + t.value.slice(end)
+                const pos = mode === "start" ? s : s + text.length
+                t.selectionStart = t.selectionEnd = pos
+              }
             }
 
-            this.el.addEventListener("click", (e) => {
-              const d = e.target.dataset || {}
-              const t = this.target
-              if (!t) return
-              const s = t.selectionStart ?? t.value.length
-              const end = t.selectionEnd ?? s
-
-              if (d.char) {
-                t.setRangeText(d.char, s, end, "end")
-                changed(t)
-              } else if (d.wrap) {
-                // Wrap the selection (or the caret) in a marker pair.
-                t.setRangeText(d.wrap + t.value.slice(s, end) + d.wrap, s, end, "end")
-                changed(t)
-              } else if (d.prefix) {
-                // Prefix every selected line (bullets/numbering).
-                const lines = t.value.slice(s, end).split("\n").map((l) => d.prefix + l).join("\n")
-                t.setRangeText(lines || d.prefix, s, end, "end")
-                changed(t)
-              } else if (d.linkify !== undefined) {
-                // Wrap the selection as a [[wiki-link]]; caret inside if empty.
-                const sel = t.value.slice(s, end)
-                t.setRangeText("[[" + sel + "]]", s, end, sel ? "end" : "start")
-                if (!sel) t.selectionStart = t.selectionEnd = s + 2
-                changed(t)
-              }
-            })
+            if (d.char) {
+              put(d.char, "end")
+            } else if (d.wrap) {
+              // Wrap the selection (or the caret) in a marker pair.
+              put(d.wrap + t.value.slice(s, end) + d.wrap, "end")
+            } else if (d.prefix) {
+              // Prefix every selected line (bullets/numbering).
+              const lines = t.value.slice(s, end).split("\n").map((l) => d.prefix + l).join("\n")
+              put(lines || d.prefix, "end")
+            } else {
+              return
+            }
+            t.focus()
+            // Nudge the block hook to debounce-save + resize.
+            t.dispatchEvent(new Event("input", {bubbles: true}))
           },
         }
       </script>

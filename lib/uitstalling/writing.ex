@@ -598,6 +598,89 @@ defmodule Uitstalling.Writing do
     %{nodes: nodes, edges: Enum.map(edges, fn {s, t} -> %{source: s, target: t} end)}
   end
 
+  # Raw prose wiki-link: `[[target]]` or `[[target|display text]]`.
+  @wikilink_md ~r/\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/
+
+  @doc """
+  Prose mentions of `target_title` across `sources`. Each source is a decrypted
+  doc shaped `%{id, title, kind, element_type, blocks}`; we scan its text-bearing
+  block fields for `[[target]]` / `[[target|display]]` wiki-links whose target
+  matches `target_title` (case-insensitive) and return one entry per source that
+  mentions it, with up to three readable sentence snippets (wiki-links reduced
+  to their display text, emphasis markers stripped).
+
+  Wiki-links are resolved at render time and never persisted as edges, so this
+  scan is how "what links here" is answered — it's the read-side counterpart to
+  the curated `link/3` edge table used by the plan map.
+  """
+  def scan_mentions(target_title, sources) do
+    want = target_title |> String.trim() |> String.downcase()
+
+    sources
+    |> Enum.map(fn src ->
+      snippets =
+        src.blocks
+        |> List.wrap()
+        |> Enum.flat_map(&block_texts/1)
+        |> Enum.flat_map(&mention_snippets(&1, want))
+        |> Enum.uniq()
+
+      {src, snippets}
+    end)
+    |> Enum.reject(fn {_src, snippets} -> snippets == [] end)
+    |> Enum.map(fn {src, snippets} ->
+      %{
+        id: src.id,
+        title: src.title,
+        kind: src.kind,
+        element_type: src.element_type,
+        snippets: Enum.take(snippets, 3)
+      }
+    end)
+  end
+
+  # The strings in a block that can carry prose wiki-links.
+  defp block_texts(block) when is_map(block) do
+    ~w(text name label source caption)
+    |> Enum.map(&block[&1])
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp block_texts(_), do: []
+
+  defp mention_snippets(text, want) do
+    text
+    |> String.split(~r/(?<=[.!?])\s+|\n+/, trim: true)
+    |> Enum.filter(&sentence_targets?(&1, want))
+    |> Enum.map(&clean_snippet/1)
+  end
+
+  defp sentence_targets?(sentence, want) do
+    @wikilink_md
+    |> Regex.scan(sentence)
+    |> Enum.any?(fn caps ->
+      (Enum.at(caps, 1) || "") |> String.trim() |> String.downcase() == want
+    end)
+  end
+
+  defp clean_snippet(sentence) do
+    sentence
+    |> then(
+      &Regex.replace(@wikilink_md, &1, fn _f, target, display ->
+        if display == "", do: target, else: display
+      end)
+    )
+    |> String.replace(~r/\*\*|\*|~~/, "")
+    |> String.trim()
+    |> snippet_truncate(160)
+  end
+
+  defp snippet_truncate(text, max) do
+    if String.length(text) > max,
+      do: (text |> String.slice(0, max) |> String.trim_trailing()) <> "…",
+      else: text
+  end
+
   defp pair_query(project, a, b) do
     from(l in Link,
       where: l.project_id == ^project.id,

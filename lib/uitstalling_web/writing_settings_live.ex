@@ -46,7 +46,8 @@ defmodule UitstallingWeb.WritingSettingsLive do
 
     assign(socket,
       enabled: settings.enabled_element_types,
-      customs: settings.custom_element_types
+      customs: settings.custom_element_types,
+      bullet_style: settings.bullet_style
     )
   end
 
@@ -106,14 +107,19 @@ defmodule UitstallingWeb.WritingSettingsLive do
     {:noreply, save(socket, socket.assigns.enabled, kept)}
   end
 
+  def handle_event("pick_bullet", %{"style" => style}, socket) do
+    {:noreply, save(socket, socket.assigns.enabled, socket.assigns.customs, style)}
+  end
+
   def handle_event("noop", _params, socket), do: {:noreply, socket}
 
   # Persist enabled + customs together (custom keys are re-derived from labels
   # by the embedded changeset), refresh the current user, re-read.
-  defp save(socket, enabled, customs) do
+  defp save(socket, enabled, customs, bullet_style \\ nil) do
     params = %{
       "enabled_element_types" => enabled,
-      "custom_element_types" => Enum.map(customs, &custom_params/1)
+      "custom_element_types" => Enum.map(customs, &custom_params/1),
+      "bullet_style" => bullet_style || socket.assigns.bullet_style
     }
 
     case Accounts.update_settings(socket.assigns.current_user, params) do
@@ -267,6 +273,29 @@ defmodule UitstallingWeb.WritingSettingsLive do
           <p :if={@at_cap} class={["mt-4 text-sm", @palette.muted]}>
             You've used all {Writing.max_custom_types()} custom tags — remove one to add another.
           </p>
+        </section>
+
+        <section class={["mt-14 pt-8 border-t", @palette.rule]}>
+          <p class={["font-mono text-xs tracking-wider", @palette.muted]}>READING</p>
+          <p class={["mt-2 text-sm", @palette.muted]}>
+            How bullet lists look in read view. In the editor they're always typed as <code>-</code>.
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              :for={
+                {style, glyph} <- [{"disc", "•"}, {"dash", "–"}, {"circle", "◦"}, {"square", "▪"}]
+              }
+              phx-click="pick_bullet"
+              phx-value-style={style}
+              class={[
+                "inline-flex items-center gap-2 rounded-full ring-1 px-3 py-1 text-sm font-semibold transition",
+                @palette.rule,
+                if(style == @bullet_style, do: "opacity-100", else: "opacity-40 hover:opacity-70")
+              ]}
+            >
+              <span class="text-base leading-none">{glyph}</span> {style}
+            </button>
+          </div>
         </section>
 
         <section class={["mt-14 pt-8 border-t", @palette.rule]}>

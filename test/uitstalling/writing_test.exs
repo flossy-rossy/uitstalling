@@ -564,6 +564,67 @@ defmodule Uitstalling.WritingTest do
     assert Repo.all(Uitstalling.Writing.Link) == []
   end
 
+  # ----- mentions (prose backlinks) ------------------------------------------------------
+
+  test "scan_mentions finds prose wiki-links pointing at a title, case-insensitively" do
+    sources = [
+      %{
+        id: "c1",
+        title: "Chapter One",
+        kind: "chapter",
+        element_type: nil,
+        blocks: [
+          %{
+            "id" => "b0",
+            "type" => "paragraph",
+            "text" => "She drew the [[Obsidian Blade]] free."
+          },
+          %{"id" => "b1", "type" => "paragraph", "text" => "Nothing to see here."}
+        ]
+      },
+      %{
+        id: "c2",
+        title: "Chapter Two",
+        kind: "chapter",
+        element_type: nil,
+        blocks: [
+          %{"id" => "b0", "type" => "paragraph", "text" => "The [[obsidian blade|blade]] hummed."}
+        ]
+      },
+      %{
+        id: "e1",
+        title: "Kaelen",
+        kind: "element",
+        element_type: "character",
+        blocks: [%{"id" => "b0", "type" => "paragraph", "text" => "No link in this one."}]
+      }
+    ]
+
+    mentions = Writing.scan_mentions("Obsidian Blade", sources)
+
+    assert [%{id: "c1"}, %{id: "c2"}] = mentions
+    # Wiki-links reduce to display text; the piped alias shows its alias.
+    assert mentions |> Enum.at(0) |> Map.fetch!(:snippets) == [
+             "She drew the Obsidian Blade free."
+           ]
+
+    assert mentions |> Enum.at(1) |> Map.fetch!(:snippets) == ["The blade hummed."]
+  end
+
+  test "scan_mentions ignores a doc that only links a different title" do
+    sources = [
+      %{
+        id: "c1",
+        title: "One",
+        kind: "chapter",
+        element_type: nil,
+        blocks: [%{"id" => "b0", "type" => "paragraph", "text" => "Meet [[Kaelen]] here."}]
+      }
+    ]
+
+    assert Writing.scan_mentions("Mira", sources) == []
+  end
+
   # ----- words ---------------------------------------------------------------------------
 
   test "count_words sums prose-bearing fields" do

@@ -14,16 +14,23 @@ defmodule Uitstalling.Accounts.UserSettings do
   alias Uitstalling.Accounts.UserSettings.CustomElementType
   alias Uitstalling.Writing
 
+  @bullet_styles ~w(disc dash circle square)
+
   @primary_key false
   embedded_schema do
     # Curated element types the user opted into (core types are always on).
     field :enabled_element_types, {:array, :string}, default: []
     embeds_many :custom_element_types, CustomElementType, on_replace: :delete
+    # How bullet lists render in read view (edit mode always shows `- `).
+    field :bullet_style, :string, default: "disc"
   end
+
+  def bullet_styles, do: @bullet_styles
 
   def changeset(settings, attrs) do
     settings
-    |> cast(attrs, [:enabled_element_types])
+    |> cast(attrs, [:enabled_element_types, :bullet_style])
+    |> validate_inclusion(:bullet_style, @bullet_styles)
     |> cast_embed(:custom_element_types)
     |> validate_enabled()
     |> validate_custom()
